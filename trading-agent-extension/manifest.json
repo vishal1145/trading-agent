@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Finvedas Trading Agent AI",
+  "version": "1.0.0",
+  "description": "Auto-detect stock & market instrument names from screen/charts and generate instant multi-agent AI analysis.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Toggle Finvedas AI Floating Widget"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "popup.js", "styles.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
