@@ -3,3 +3,7 @@ node_modules/
 package-lock.json
 frontend/
 snowflake.log
+trading_cache.db
+trading_cache.db-journal
+trading_cache.db-wal
+trading_cache.db-shm

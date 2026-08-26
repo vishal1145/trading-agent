@@ -73,24 +73,42 @@ function detectInstrumentSymbol() {
     }
   }
 
-  // 2. TradingView Detection
-  if (hostname.includes('tradingview.com')) {
-    // Try URL parameter e.g. symbol=NSE:RELIANCE or symbol=BSE:TATAMOTORS
-    const urlParams = new URLSearchParams(window.location.search);
-    const urlSymbol = urlParams.get('symbol');
-    if (urlSymbol) {
-      const parsed = extractTickerFromExchange(urlSymbol);
-      if (parsed) return { symbol: parsed, source: 'TradingView URL', confidence: 'High' };
-    }
+  // 2. Universal Chart Legend & TradingView Detection (Runs on ANY domain / iframe)
+  const tvHeader = document.querySelector('[class*="legend-source-title"]') ||
+    document.querySelector('#header-toolbar-symbol-search') ||
+    document.querySelector('[data-name="legend-source-title"]') ||
+    document.querySelector('[class*="legend-"] [class*="title-"]') ||
+    document.querySelector('[class*="legendTitle"]');
+  if (tvHeader && tvHeader.innerText) {
+    const parsed = extractTickerFromExchange(tvHeader.innerText);
+    if (parsed && parsed.length >= 2) return { symbol: parsed, source: 'Chart Legend', confidence: 'High' };
+  }
 
-    // Try DOM selectors for TradingView chart legend / header
-    const tvHeader = document.querySelector('[class*="legend-source-title"]') ||
-      document.querySelector('#header-toolbar-symbol-search') ||
-      document.querySelector('[data-name="legend-source-title"]');
-    if (tvHeader && tvHeader.innerText) {
-      const parsed = extractTickerFromExchange(tvHeader.innerText);
-      if (parsed) return { symbol: parsed, source: 'TradingView Header', confidence: 'High' };
+  // Scan active UI tab buttons, header titles, active instrument items on custom trading portals
+  const activeEls = document.querySelectorAll('[class*="active"] [class*="symbol"], [class*="active"] [class*="name"], [class*="tab"][class*="active"], [class*="symbol-name"], [class*="instrument-name"]');
+  for (const el of activeEls) {
+    if (el.innerText) {
+      const cleaned = cleanSymbol(el.innerText);
+      if (cleaned && cleaned.length >= 2 && cleaned.length <= 25) {
+        return { symbol: cleaned, source: 'Active Symbol Tab', confidence: 'High' };
+      }
     }
+  }
+
+  // Scan URL parameter e.g. symbol=NSE:RELIANCE or symbol=BSE:TATAMOTORS
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlSymbol = urlParams.get('symbol');
+  if (urlSymbol) {
+    const parsed = extractTickerFromExchange(urlSymbol);
+    if (parsed) return { symbol: parsed, source: 'URL Symbol', confidence: 'High' };
+  }
+
+  // Scan visible text on page for "SYMBOL · TIMEFRAME · EXCHANGE" (e.g. STATE BANK OF INDIA · 15 · NSE)
+  const bodyText = document.body ? document.body.innerText : '';
+  const chartLegendMatch = bodyText.match(/([A-Z0-9\s]{2,30})\s*·\s*(\d+[mhd]?|day|week)\s*·\s*(NSE|BSE|MCX|NASDAQ|NYSE)/i);
+  if (chartLegendMatch && chartLegendMatch[1]) {
+    const cleaned = cleanSymbol(chartLegendMatch[1]);
+    if (cleaned && cleaned.length >= 2) return { symbol: cleaned, source: 'Chart Legend Pattern', confidence: 'High' };
   }
 
   // 3. Zerodha Kite Detection
@@ -206,9 +224,21 @@ function cleanSymbol(text) {
 
 function extractTickerFromExchange(raw) {
   if (!raw) return '';
-  const parts = raw.split(':');
-  const symbol = parts.length > 1 ? parts[1] : parts[0];
-  return cleanSymbol(symbol);
+  let text = raw.trim();
+
+  // Handle "STATE BANK OF INDIA · 15 · NSE" or "SBIN · 15m · NSE"
+  if (text.includes('·') || text.includes('•')) {
+    const parts = text.split(/[·•]/);
+    text = parts[0].trim();
+  }
+
+  // Handle "NSE:SBIN" or "BSE:TATAMOTORS"
+  if (text.includes(':')) {
+    const parts = text.split(':');
+    text = parts.length > 1 ? parts[1] : parts[0];
+  }
+
+  return cleanSymbol(text);
 }
 
 // ─── Floating & Draggable Widget Injection ────────────────
@@ -257,6 +287,7 @@ function initFloatingWidget() {
       <span style="font-size: 13px; font-weight: 700; color: #f8fafc; letter-spacing: -0.2px;">Finvedas AI Agent</span>
     </div>
     <div style="display: flex; gap: 6px; align-items: center;">
+      <input type="range" id="finvedas-opacity-slider" min="0.2" max="1" step="0.05" value="1" title="Adjust Transparency" style="width: 110px; height: 4px; margin-right: 8px; cursor: pointer; accent-color: #6366f1;">
       <button id="finvedas-min-btn" title="Minimize" style="background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: #cbd5e1; cursor: pointer; font-size: 13px; width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; line-height: 1; outline: none;">─</button>
       <button id="finvedas-close-btn" title="Close" style="background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: #cbd5e1; cursor: pointer; font-size: 13px; width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; line-height: 1; outline: none;">✕</button>
     </div>
@@ -300,9 +331,9 @@ function initFloatingWidget() {
   badge.innerHTML = `<span>⚡</span><span>Finvedas AI</span>`;
   document.body.appendChild(badge);
 
-  // Restore Saved Position
+  // Restore Saved Position & Opacity
   if (chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(['finvedas_pos_top', 'finvedas_pos_left', 'finvedas_minimized'], (res) => {
+    chrome.storage.local.get(['finvedas_pos_top', 'finvedas_pos_left', 'finvedas_minimized', 'finvedas_opacity'], (res) => {
       if (res.finvedas_pos_top && res.finvedas_pos_left) {
         wrapper.style.top = res.finvedas_pos_top;
         wrapper.style.left = res.finvedas_pos_left;
@@ -312,7 +343,25 @@ function initFloatingWidget() {
         wrapper.style.display = 'none';
         badge.style.display = 'flex';
       }
+      if (res.finvedas_opacity) {
+        wrapper.style.opacity = res.finvedas_opacity;
+        const opacitySlider = document.getElementById('finvedas-opacity-slider');
+        if (opacitySlider) opacitySlider.value = res.finvedas_opacity;
+      }
     });
+  }
+
+  // Opacity Slider Logic
+  const opacitySlider = document.getElementById('finvedas-opacity-slider');
+  if (opacitySlider) {
+    opacitySlider.addEventListener('input', (e) => {
+      wrapper.style.opacity = e.target.value;
+      if (chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ finvedas_opacity: e.target.value });
+      }
+    });
+    // Prevent drag when interacting with slider
+    opacitySlider.addEventListener('mousedown', (e) => e.stopPropagation());
   }
 
   // Drag Logic
@@ -321,7 +370,7 @@ function initFloatingWidget() {
   let offsetY = 0;
 
   dragBar.addEventListener('mousedown', (e) => {
-    if (e.target.tagName === 'BUTTON') return;
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
     isDragging = true;
     offsetX = e.clientX - wrapper.getBoundingClientRect().left;
     offsetY = e.clientY - wrapper.getBoundingClientRect().top;
@@ -374,3 +423,21 @@ function initFloatingWidget() {
     }
   });
 }
+
+// Automatically background-scan current frame and sync high-confidence symbol to storage
+function autoScanAndStore() {
+  try {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+    const symbolInfo = detectInstrumentSymbol();
+    if (symbolInfo && symbolInfo.confidence !== 'Low') {
+      symbolInfo.screenLivePrice = detectOnScreenPrice();
+      chrome.runtime.sendMessage({ action: 'UPDATE_TAB_SYMBOL', symbolInfo }).catch(() => {});
+    }
+  } catch (e) {}
+}
+
+setInterval(autoScanAndStore, 1500);
+autoScanAndStore();
+
+
+

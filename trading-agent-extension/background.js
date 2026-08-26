@@ -36,3 +36,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     });
   }
 });
+
+// Handle tab-isolated symbol updates from content scripts
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'UPDATE_TAB_SYMBOL' && sender.tab && sender.tab.id) {
+    const tabId = sender.tab.id;
+    chrome.storage.local.set({ [`tab_symbol_${tabId}`]: message.symbolInfo });
+  }
+});
+

@@ -41,39 +41,65 @@ function autoDetectSymbol() {
   const symbolInput = document.getElementById('symbolInput');
   const sourceTag = document.getElementById('sourceTag');
 
-  // Check if context menu saved a selection
-  chrome.storage.local.get(['targetSymbol'], (result) => {
-    if (result.targetSymbol) {
-      symbolInput.value = result.targetSymbol;
-      sourceTag.innerText = 'Saved Selection';
-      // Clear saved selection after reading
-      chrome.storage.local.remove('targetSymbol');
-      return;
-    }
+  // Check if extension context is valid
+  if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+    if (sourceTag) sourceTag.innerText = 'Default';
+    return;
+  }
 
-    // Query active tab content script
+  try {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (!tabs || !tabs[0]) {
-        sourceTag.innerText = 'Default';
+      if (chrome.runtime.lastError || !tabs || !tabs[0]) {
+        if (sourceTag) sourceTag.innerText = 'Default';
         return;
       }
 
-      chrome.tabs.sendMessage(tabs[0].id, { action: 'DETECT_SYMBOL' }, (response) => {
-        if (chrome.runtime.lastError || !response) {
-          sourceTag.innerText = 'Default';
+      const activeTabId = tabs[0].id;
+      const tabStorageKey = `tab_symbol_${activeTabId}`;
+
+      if (!chrome.storage || !chrome.storage.local) return;
+
+      // Read ONLY from the ACTIVE tab's isolated storage
+      chrome.storage.local.get(['targetSymbol', tabStorageKey], (result) => {
+        if (chrome.runtime.lastError) return;
+
+        if (result && result.targetSymbol) {
+          symbolInput.value = result.targetSymbol;
+          sourceTag.innerText = 'Saved Selection';
+          chrome.storage.local.remove('targetSymbol');
           return;
         }
 
-        if (response.symbol) {
-          symbolInput.value = response.symbol;
-          sourceTag.innerText = `${response.source} (${response.confidence})`;
-          if (response.screenLivePrice) {
-            window.detectedScreenPrice = response.screenLivePrice;
+        const activeTabSymbol = result ? result[tabStorageKey] : null;
+        if (activeTabSymbol && activeTabSymbol.symbol && activeTabSymbol.confidence !== 'Low') {
+          symbolInput.value = activeTabSymbol.symbol;
+          sourceTag.innerText = `${activeTabSymbol.source} (${activeTabSymbol.confidence})`;
+          if (activeTabSymbol.screenLivePrice) {
+            window.detectedScreenPrice = activeTabSymbol.screenLivePrice;
           }
+          return;
         }
+
+        // Query active tab content script fallback directly
+        chrome.tabs.sendMessage(activeTabId, { action: 'DETECT_SYMBOL' }, (response) => {
+          if (chrome.runtime.lastError || !response) {
+            if (sourceTag) sourceTag.innerText = 'Default';
+            return;
+          }
+
+          if (response.symbol) {
+            symbolInput.value = response.symbol;
+            sourceTag.innerText = `${response.source} (${response.confidence})`;
+            if (response.screenLivePrice) {
+              window.detectedScreenPrice = response.screenLivePrice;
+            }
+          }
+        });
       });
     });
-  });
+  } catch (err) {
+    console.warn('Extension context invalidated or inactive:', err.message);
+  }
 }
 
 /**

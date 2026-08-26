@@ -188,7 +188,7 @@ Respond ONLY with valid JSON. No explanation outside JSON.
     const rawText = await runLLMCompletion({
       systemPrompt,
       prompt,
-      maxTokens: 4000,
+      maxTokens: 5000,
       temperature: 0.1,
     });
 

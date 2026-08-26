@@ -1,5 +1,6 @@
 import snowflake from 'snowflake-sdk';
 import dotenv from 'dotenv';
+import { getFromCache, saveToCache } from './localCache.js';
 
 dotenv.config();
 
@@ -152,6 +153,11 @@ export const getInstruments = async () => {
 // ─── Get Latest LTP ──────────────────────────────────────
 export const getLatestLTP = async (symbol) => {
   const cleanSymbol = normalizeSymbol(symbol);
+  const cacheKey = `latest_ltp_${cleanSymbol}`;
+  const cached = getFromCache(cacheKey);
+  if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
+  console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+
   const sql = `
     SELECT 
       INSTRUMENT_SYMBOL,
@@ -164,7 +170,10 @@ export const getLatestLTP = async (symbol) => {
     LIMIT 1
   `;
   const rows = await query(sql, [cleanSymbol]);
-  if (rows && rows.length > 0) return rows[0];
+  if (rows && rows.length > 0) {
+    saveToCache(cacheKey, rows[0]);
+    return rows[0];
+  }
 
   // Smart Fallback for LTP: Exclude derivative options & futures so LTP never grabs a ₹7 option contract
   const fuzzySymbol = cleanSymbol.split(' ')[0];
@@ -183,11 +192,18 @@ export const getLatestLTP = async (symbol) => {
     LIMIT 1
   `;
   const fallbackRows = await query(fallbackSql, [`%${fuzzySymbol}%`]);
-  return fallbackRows ? fallbackRows[0] : null;
+  const result = fallbackRows ? fallbackRows[0] : null;
+  if (result) saveToCache(cacheKey, result);
+  return result;
 };
 
 // ─── Get Market Breadth ──────────────────────────────────
 export const getMarketBreadth = async () => {
+  const cacheKey = 'market_breadth';
+  const cached = getFromCache(cacheKey);
+  if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
+  console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+
   const sql = `
     WITH latest AS (
       SELECT 
@@ -212,13 +228,20 @@ export const getMarketBreadth = async () => {
     WHERE prev_close IS NOT NULL
   `;
   const rows = await query(sql);
-  return rows[0];
+  const result = rows[0] || null;
+  if (result) saveToCache(cacheKey, result);
+  return result;
 };
 
 // ─── Get User Sentiment (Full Orders History Scan) ────────
 export const getUserSentiment = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
+    const cacheKey = `user_sentiment_${cleanSymbol}`;
+    const cached = getFromCache(cacheKey);
+    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
+    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+
     const sql = `
       SELECT
         ORDER_TYPE,
@@ -232,7 +255,9 @@ export const getUserSentiment = async (symbol) => {
       GROUP BY ORDER_TYPE, STATUS
       ORDER BY ORDER_TYPE, STATUS
     `;
-    return await query(sql, [`%${cleanSymbol}%`, cleanSymbol]);
+    const rows = await query(sql, [`%${cleanSymbol}%`, cleanSymbol]);
+    saveToCache(cacheKey, rows);
+    return rows;
   } catch (error) {
     console.warn('⚠️  getUserSentiment skipped:', error.message.split('\n')[0]);
     return [];
@@ -243,6 +268,11 @@ export const getUserSentiment = async (symbol) => {
 export const getOptionsData = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
+    const cacheKey = `options_data_${cleanSymbol}`;
+    const cached = getFromCache(cacheKey);
+    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
+    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+
     const sql = `
       SELECT
         INSTRUMENT_SYMBOL,
@@ -261,7 +291,9 @@ export const getOptionsData = async (symbol) => {
       ) = 1
       ORDER BY VOLUME_TRADED_TODAY DESC
     `;
-    return await query(sql, [`%${cleanSymbol}%`]);
+    const rows = await query(sql, [`%${cleanSymbol}%`]);
+    saveToCache(cacheKey, rows);
+    return rows;
   } catch (error) {
     console.warn('⚠️  getOptionsData skipped (table may not exist):', error.message.split('\n')[0]);
     return [];
@@ -272,6 +304,11 @@ export const getOptionsData = async (symbol) => {
 export const getActiveOrders = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
+    const cacheKey = `active_orders_${cleanSymbol}`;
+    const cached = getFromCache(cacheKey);
+    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
+    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+
     const sql = `
       SELECT
         ao.ID,
@@ -290,7 +327,9 @@ export const getActiveOrders = async (symbol) => {
          OR ao.INSTRUMENT_ID IS NOT NULL
       ORDER BY ao.CREATED_AT DESC
     `;
-    return await query(sql, [`%${cleanSymbol}%`]);
+    const rows = await query(sql, [`%${cleanSymbol}%`]);
+    saveToCache(cacheKey, rows);
+    return rows;
   } catch (error) {
     console.warn('⚠️  getActiveOrders skipped:', error.message.split('\n')[0]);
     return [];
@@ -340,6 +379,11 @@ export const getHistoricalCandleStats = async (symbol) => {
 // ─── Get PnL Snapshot (Platform Fear/Greed Full Scan) ──────
 export const getPnlSnapshot = async () => {
   try {
+    const cacheKey = 'pnl_snapshot';
+    const cached = getFromCache(cacheKey);
+    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
+    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+
     const sql = `
       SELECT
         COUNT(*)             AS total_snapshots_analyzed,
@@ -354,7 +398,9 @@ export const getPnlSnapshot = async () => {
       FROM FINVEDAS_SYNC.RAW.PNL_SNAPSHOTS
     `;
     const rows = await query(sql);
-    return rows[0];
+    const result = rows[0] || null;
+    if (result) saveToCache(cacheKey, result);
+    return result;
   } catch (error) {
     console.warn('⚠️  getPnlSnapshot skipped:', error.message.split('\n')[0]);
     return null;
