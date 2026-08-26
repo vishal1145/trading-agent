@@ -1,4 +1,4 @@
-import Groq from 'groq-sdk';
+import { runLLMCompletion, parseLLMJson } from '../tools/alerts.js';
 import { getLatestCandles, getHistoricalCandleStats } from '../tools/snowflake.js';
 import { calculateIndicators } from '../tools/indicators.js';
 import { getKiteHistoricalCandles } from '../tools/kite.js';
@@ -6,10 +6,6 @@ import { getYahooHistoricalCandles } from '../tools/yahoo.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
-
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
 
 // ─── Helper: summarize indicators for a timeframe ────────
 const summarizeIndicators = (ind, tf) => {
@@ -78,8 +74,8 @@ export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays =
     };
 
     const c15m = calibrateCandles(candles15m);
-    const c5m  = calibrateCandles(candles5m);
-    const c1m  = calibrateCandles(candles1m);
+    const c5m = calibrateCandles(candles5m);
+    const c1m = calibrateCandles(candles1m);
 
     // Step 2: Calculate indicators for each timeframe
     const ind1h = calculateIndicators(candles1h);
@@ -101,7 +97,23 @@ export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays =
           : bearCount > bullCount ? 'MOSTLY_BEARISH'
             : 'MIXED';
 
-    // Step 4: Last 5 candles of primary (1hr) + 5min for context
+    // Step 4: Sample full candle trajectory across dataset + last 5 for context
+    const sampleSize = Math.min(25, candles1h.length);
+    const step = Math.max(1, Math.floor(candles1h.length / sampleSize));
+    const sampledPrimaryTrajectory = [];
+    for (let i = 0; i < candles1h.length; i += step) {
+      const c = candles1h[i];
+      sampledPrimaryTrajectory.push({
+        idx: i,
+        time: c.BUCKET,
+        open: +c.OPEN,
+        high: +c.HIGH,
+        low: +c.LOW,
+        close: +c.CLOSE,
+        volume: +c.VOLUME,
+      });
+    }
+
     const last5_1h = candles1h.slice(-5).map(c => ({
       time: c.BUCKET, open: +c.OPEN, high: +c.HIGH, low: +c.LOW,
       close: +c.CLOSE, volume: +c.VOLUME,
@@ -114,18 +126,21 @@ export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays =
     // Step 5: Build multi-timeframe prompt
     const prompt = `
 You are an expert technical analyst specializing in Indian markets (NSE/BSE).
-Analyze ${symbol} using MULTI-TIMEFRAME confluence analysis.
+Analyze ${symbol} using MULTI-TIMEFRAME confluence analysis across ALL ${candles1h.length} loaded candles for ${timeframe}.
 
-DEEP HISTORICAL QUANT STATS (Multi-Million Rows Scanned in Snowflake):
-- Total Candle Rows Analyzed: ${historicalStats?.total_rows_scanned?.toLocaleString() || '10,000,000+'} (1min: ${historicalStats?.total_1min_candles?.toLocaleString()}, 5min: ${historicalStats?.total_5min_candles?.toLocaleString()}, 15min: ${historicalStats?.total_15min_candles?.toLocaleString()}, 1hr: ${historicalStats?.total_1hr_candles?.toLocaleString()})
+PRIMARY TIMEFRAME CANDLE DATASET STATS:
+- Total Primary Candles Analyzed: ${candles1h.length} candles across full lookback range
+- Total Candle Rows Scanned in Snowflake: ${historicalStats?.total_rows_scanned?.toLocaleString() || '10,000,000+'} (1min: ${historicalStats?.total_1min_candles?.toLocaleString()}, 5min: ${historicalStats?.total_5min_candles?.toLocaleString()}, 15min: ${historicalStats?.total_15min_candles?.toLocaleString()}, 1hr: ${historicalStats?.total_1hr_candles?.toLocaleString()})
 - All-Time Support Low: ${historicalStats?.historical_support_low || 'N/A'}
 - All-Time Resistance High: ${historicalStats?.historical_resistance_high || 'N/A'}
 - Historical Avg Volume: ${historicalStats?.avg_volume ? Math.round(historicalStats.avg_volume).toLocaleString() : 'N/A'}
 - Price Volatility (StdDev): ${historicalStats?.price_volatility ? historicalStats.price_volatility.toFixed(2) : 'N/A'}
-- Data Range: ${historicalStats?.oldest_record_date || 'N/A'} to ${historicalStats?.newest_record_date || 'N/A'}
 
-MULTI-TIMEFRAME INDICATOR SUMMARY:
-${summarizeIndicators(ind1h, '1_hour')}
+SAMPLED TRAJECTORY ACROSS ALL ${candles1h.length} PRIMARY CANDLES (from start to end):
+${JSON.stringify(sampledPrimaryTrajectory, null, 2)}
+
+MULTI-TIMEFRAME INDICATOR SUMMARY (Calculated across ALL candles):
+${summarizeIndicators(ind1h, 'primary_' + timeframe)}
 
 ${summarizeIndicators(ind15m, '15_min')}
 
@@ -135,7 +150,7 @@ ${summarizeIndicators(ind1m, '1_min')}
 
 TIMEFRAME ALIGNMENT: ${mtfAlignment} (${bullCount} bullish, ${bearCount} bearish out of ${trendVotes.length} TFs)
 
-RECENT 1H CANDLES (last 5):
+RECENT PRIMARY CANDLES (last 5):
 ${JSON.stringify(last5_1h)}
 
 RECENT 5M CANDLES (last 5 — for entry timing):
@@ -169,46 +184,15 @@ Provide analysis in this EXACT JSON format:
 Respond ONLY with valid JSON. No explanation outside JSON.
     `;
 
-    let response;
-    const modelsToTry = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'groq/compound', 'groq/compound-mini'];
-    for (const model of modelsToTry) {
-      try {
-        response = await groq.chat.completions.create({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are an expert multi-timeframe technical analyst for Indian stock markets. Always respond with valid JSON only.',
-            },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.1,
-          max_tokens: 4000,
-        });
-        if (response && response.choices && response.choices[0]) break;
-      } catch (err) {
-        console.warn(`⚠️ Market Analyst model '${model}' failed/rate limited: ${err.message}. Trying next fallback...`);
-      }
-    }
+    const systemPrompt = 'You are an expert multi-timeframe technical analyst for Indian stock markets. Always respond with valid JSON only.';
+    const rawText = await runLLMCompletion({
+      systemPrompt,
+      prompt,
+      maxTokens: 4000,
+      temperature: 0.1,
+    });
 
-    // Step 6: Parse response cleanly
-    const rawText = response.choices[0].message.content.trim();
-    let cleanText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    if (cleanText.includes('<think>')) {
-      const idx = cleanText.lastIndexOf('</think>');
-      if (idx !== -1) cleanText = cleanText.substring(idx + 8);
-      else {
-        const braceIdx = cleanText.indexOf('{');
-        if (braceIdx !== -1) cleanText = cleanText.substring(braceIdx);
-      }
-    }
-    cleanText = cleanText.replace(/```json|```/gi, '').trim();
-    const firstBrace = cleanText.indexOf('{');
-    const lastBrace = cleanText.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      cleanText = cleanText.substring(firstBrace, lastBrace + 1);
-    }
-    const analysis = JSON.parse(cleanText);
+    const analysis = parseLLMJson(rawText);
 
     console.log(`✅ Market Analyst done [${mtfAlignment}]:`, analysis.bias, analysis.confidence + '%');
 

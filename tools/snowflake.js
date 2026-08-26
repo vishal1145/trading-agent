@@ -3,6 +3,9 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+snowflake.configure({ logLevel: 'WARN' });
+
+
 // ─── Create Connection ───────────────────────────────────
 const connection = snowflake.createConnection({
   account:   process.env.SF_ACCOUNT,

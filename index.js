@@ -11,8 +11,17 @@ import { getAvailableInstruments, normalizeSymbol } from './tools/snowflake.js';
 dotenv.config();
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['*'] }));
 app.use(express.json());
+
+// Log every incoming HTTP request immediately to terminal
+app.use((req, res, next) => {
+  console.log(`\n📡 [${new Date().toLocaleTimeString('en-IN')}] Incoming ${req.method} request to ${req.url}`);
+  if (req.method === 'POST') {
+    console.log(`   Payload:`, JSON.stringify(req.body));
+  }
+  next();
+});
 
 // ─── Health Check ───────────────────────────────────────
 app.get('/', (req, res) => {
@@ -126,7 +135,7 @@ app.get('/signal/:symbol', async (req, res) => {
 
 // ─── Start Server ────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
   ╔═══════════════════════════════════════╗
   ║     🤖 Trading Agent Started          ║
@@ -135,5 +144,8 @@ app.listen(PORT, () => {
   ╚═══════════════════════════════════════╝
   `);
 });
+
+// Keep Node.js event loop active to prevent premature process exit on Node v26
+setInterval(() => { }, 1000 * 60 * 60);
 
 export default app;

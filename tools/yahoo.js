@@ -44,6 +44,19 @@ const mapYahooInterval = (timeframe) => {
 };
 
 /**
+ * Yahoo Finance enforces strict lookback limits per interval:
+ *   1m  → max 7 days
+ *   5m  → max 60 days
+ *   15m → max 60 days
+ *   1h+ → no practical limit
+ */
+const getYahooMaxLookback = (interval) => {
+  if (interval === '1m') return 7;
+  if (interval === '5m' || interval === '15m') return 60;
+  return 365; // daily / weekly
+};
+
+/**
  * Fetch 100% Free Real-Time OHLC Candles from Yahoo Finance
  */
 export const getYahooHistoricalCandles = async (rawSymbol, timeframe = '1_hour', lookbackDays = 30) => {
@@ -51,12 +64,18 @@ export const getYahooHistoricalCandles = async (rawSymbol, timeframe = '1_hour',
     const symbol = await normalizeYahooSymbol(rawSymbol);
     const interval = mapYahooInterval(timeframe);
 
-    // Calculate Date Range
+    // Calculate Date Range — cap to Yahoo Finance per-interval limits
+    const maxLookback = getYahooMaxLookback(interval);
+    const effectiveLookback = Math.min(lookbackDays || 30, maxLookback);
+    if (effectiveLookback < (lookbackDays || 30)) {
+      console.warn(`⚠️ Yahoo Finance: capping ${rawSymbol} lookback from ${lookbackDays}d → ${effectiveLookback}d (${interval} limit is ${maxLookback}d)`);
+    }
+
     const period2 = new Date();
     const period1 = new Date();
-    period1.setDate(period2.getDate() - (lookbackDays || 30));
+    period1.setDate(period2.getDate() - effectiveLookback);
 
-    console.log(`📡 Fetching FREE Yahoo Finance live candles for ${symbol} (${lookbackDays}d lookback, interval: ${interval})...`);
+    console.log(`📡 Fetching FREE Yahoo Finance live candles for ${symbol} (${effectiveLookback}d lookback, interval: ${interval})...`);
 
     const result = await yahoo.chart(symbol, {
       period1,

@@ -1,4 +1,4 @@
-import Groq from 'groq-sdk';
+import { runLLMCompletion, parseLLMJson } from '../tools/alerts.js';
 import {
   getOptionsData,
   getUserSentiment,
@@ -10,10 +10,6 @@ import {
 import dotenv from 'dotenv';
 
 dotenv.config();
-
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
 
 // ─── Sentiment Agent ─────────────────────────────────────
 // Analyzes:
@@ -180,46 +176,15 @@ Provide sentiment analysis in this EXACT JSON format:
 Respond ONLY with valid JSON. No explanation outside JSON.
     `;
 
-    let response;
-    const modelsToTry = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'groq/compound', 'groq/compound-mini'];
-    for (const model of modelsToTry) {
-      try {
-        response = await groq.chat.completions.create({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are an expert market sentiment analyst for Indian stock markets. Always respond with valid JSON only.',
-            },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.1,
-          max_tokens: 2000,
-        });
-        if (response && response.choices && response.choices[0]) break;
-      } catch (err) {
-        console.warn(`⚠️ Sentiment Agent model '${model}' failed/rate limited: ${err.message}. Trying next fallback...`);
-      }
-    }
+    const systemPrompt = 'You are an expert market sentiment analyst for Indian stock markets. Always respond with valid JSON only.';
+    const rawText = await runLLMCompletion({
+      systemPrompt,
+      prompt,
+      maxTokens: 2000,
+      temperature: 0.1,
+    });
 
-    // Step 6: Parse response cleanly
-    const rawText = response.choices[0].message.content.trim();
-    let cleanText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    if (cleanText.includes('<think>')) {
-      const idx = cleanText.lastIndexOf('</think>');
-      if (idx !== -1) cleanText = cleanText.substring(idx + 8);
-      else {
-        const braceIdx = cleanText.indexOf('{');
-        if (braceIdx !== -1) cleanText = cleanText.substring(braceIdx);
-      }
-    }
-    cleanText = cleanText.replace(/```json|```/gi, '').trim();
-    const firstBrace = cleanText.indexOf('{');
-    const lastBrace = cleanText.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      cleanText = cleanText.substring(firstBrace, lastBrace + 1);
-    }
-    const sentiment = JSON.parse(cleanText);
+    const sentiment = parseLLMJson(rawText);
 
     console.log(`✅ Sentiment Agent done for ${symbol}:`,
       sentiment.overall_sentiment,

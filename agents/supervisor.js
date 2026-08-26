@@ -1,12 +1,7 @@
-import Groq from 'groq-sdk';
-import { sendAlert } from '../tools/alerts.js';
+import { sendAlert, runLLMCompletion, parseLLMJson } from '../tools/alerts.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
-
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
 
 // ─── Signal Strength Calculator ──────────────────────────
 const calculateSignalStrength = (marketAnalysis, sentiment, patterns) => {
@@ -230,62 +225,21 @@ Respond in this EXACT JSON format:
 Respond ONLY with valid JSON. No explanation outside JSON.
     `;
 
-    // Step 3: Ask Groq for final decision with rate-limit fallback across active models
-    let response;
-    const modelsToTry = [
-      'openai/gpt-oss-120b',
-      'openai/gpt-oss-20b',
-      'groq/compound',
-      'groq/compound-mini',
-    ];
-
-    for (const model of modelsToTry) {
-      try {
-        response = await groq.chat.completions.create({
-          model,
-          max_tokens: 2000,
-          messages: [
-            {
-              role: 'system',
-              content: `You are the Chief Market Analyst AI for Finvedas, an Indian trading platform. 
+    // Step 3: Ask LLM (Anthropic Claude priority, Gemini fallback, Groq tertiary) for final decision
+    const systemPrompt = `You are the Chief Market Analyst AI for Finvedas, an Indian trading platform. 
 You synthesize reports from multiple AI agents and make final trading signal decisions.
 You are analytical, precise, and always consider risk management.
 Always respond with valid JSON only.
-Always include disclaimer that this is not financial advice.`,
-            },
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          temperature: 0.1,
-        });
-        if (response && response.choices && response.choices[0]) {
-          break;
-        }
-      } catch (err) {
-        console.warn(`⚠️ Model '${model}' failed/rate limited: ${err.message}. Trying next fallback...`);
-      }
-    }
+Always include disclaimer that this is not financial advice.`;
 
-    // Step 4: Parse response cleanly
-    const rawText = response.choices[0].message.content.trim();
-    let cleanText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    if (cleanText.includes('<think>')) {
-      const idx = cleanText.lastIndexOf('</think>');
-      if (idx !== -1) cleanText = cleanText.substring(idx + 8);
-      else {
-        const braceIdx = cleanText.indexOf('{');
-        if (braceIdx !== -1) cleanText = cleanText.substring(braceIdx);
-      }
-    }
-    cleanText = cleanText.replace(/```json|```/gi, '').trim();
-    const firstBrace = cleanText.indexOf('{');
-    const lastBrace = cleanText.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      cleanText = cleanText.substring(firstBrace, lastBrace + 1);
-    }
-    const finalSignal = JSON.parse(cleanText);
+    const rawText = await runLLMCompletion({
+      systemPrompt,
+      prompt,
+      maxTokens: 2500,
+      temperature: 0.1,
+    });
+
+    const finalSignal = parseLLMJson(rawText);
 
     console.log(`\n${'═'.repeat(50)}`);
     console.log(`🎯 FINAL SIGNAL for ${symbol}:`);
