@@ -23,8 +23,9 @@ dotenv.config();
 // 5. Google News RSS Headlines (Media sentiment)
 // 6. Reddit r/IndianStreetBets (Social sentiment)
 
-export const sentimentAgent = async (symbol) => {
+export const sentimentAgent = async (symbol, abortSignal = null) => {
   try {
+    if (abortSignal?.aborted) throw new Error('Analysis aborted by user.');
     console.log(`🎭 Sentiment Agent analyzing ${symbol} (Snowflake + Free Multi-Source)...`);
 
     // Step 1: Fetch all data sources in parallel safely
@@ -176,6 +177,7 @@ Respond ONLY with valid JSON. No explanation outside JSON.
       prompt,
       maxTokens: 2500,
       temperature: 0.1,
+      signal: abortSignal,
     });
 
     const sentiment = parseLLMJson(rawText);

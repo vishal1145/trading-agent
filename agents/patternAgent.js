@@ -315,8 +315,9 @@ const detectPatterns = (candles) => {
 };
 
 // ─── Pattern Agent ───────────────────────────────────────
-export const patternAgent = async (symbol, timeframe = '1_hour', inputCandles = null) => {
+export const patternAgent = async (symbol, timeframe = '1_hour', inputCandles = null, abortSignal = null) => {
   try {
+    if (abortSignal?.aborted) throw new Error('Analysis aborted by user.');
     console.log(`🔍 Pattern Agent scanning ALL candles for ${symbol} on ${timeframe}...`);
 
     // Step 1: Use provided live candles or fetch from Yahoo / Snowflake
@@ -434,7 +435,7 @@ Respond ONLY with valid JSON. No explanation outside JSON.
     `;
 
     const systemPrompt = 'You are an expert candlestick and chart pattern analyst for Indian stock markets. Always respond with valid JSON only.';
-    const rawText = await runLLMCompletion({ systemPrompt, prompt, maxTokens: 4000, temperature: 0.1 });
+    const rawText = await runLLMCompletion({ systemPrompt, prompt, maxTokens: 4000, temperature: 0.1, signal: abortSignal });
     const patternAnalysis = parseLLMJson(rawText);
 
     console.log(`✅ Pattern Agent done (scanned ALL ${totalCandlesScanned} candles for ${symbol}):`,

@@ -2,7 +2,8 @@
  * Finvedas Trading Agent - Extension Popup Controller
  */
 
-const API_BASE_URL = 'http://localhost:3000';
+// let API_BASE_URL = 'https://api.tradingagent.chandankumal.in';
+const FALLBACK_API_URL = 'http://localhost:3000';
 
 let selectedTimeframe = '1_hour';
 let selectedLookbackDays = 30;
@@ -14,7 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
- * Check if local trading agent backend is active on port 3000
+ * Check if trading agent backend is active, fallback to local if remote is down
  */
 async function initHealthCheck() {
   const dot = document.getElementById('statusDot');
@@ -24,18 +25,54 @@ async function initHealthCheck() {
     const res = await fetch(`${API_BASE_URL}/`, { method: 'GET' });
     if (res.ok) {
       if (dot) dot.className = 'status-dot online';
-      if (text) text.innerText = 'Backend Online';
-    } else {
-      throw new Error('Non-200 response');
+      if (text) text.innerText = 'Remote Backend Online';
+      return;
     }
   } catch (err) {
+    console.warn('Priority API unavailable, trying fallback...');
+  }
+
+  try {
+    const res = await fetch(`${FALLBACK_API_URL}/`, { method: 'GET' });
+    if (res.ok) {
+      API_BASE_URL = FALLBACK_API_URL;
+      if (dot) dot.className = 'status-dot online';
+      if (text) text.innerText = 'Local Backend Online';
+      return;
+    }
+    throw new Error('Local API also down');
+  } catch (err) {
+    API_BASE_URL = FALLBACK_API_URL;
     if (dot) dot.className = 'status-dot offline';
     if (text) text.innerText = 'Backend Offline';
   }
 }
 
 /**
- * Message active tab content script to detect instrument symbol from screen
+ * Known UI garbage tokens that should never be treated as instrument symbols.
+ * Mirrors the blocklist in content.js for cross-validation of cached values.
+ */
+const POPUP_GARBAGE_BLOCKLIST = new Set([
+  'CTRL K', 'CTRL F', 'CTRL L', 'CTRL S', 'CTRL', 'CMD K', 'CMD',
+  'SEARCH', 'SEARCH INSTRUMENTS', 'FIND', 'HOME', 'MENU', 'TAB',
+  'SHARE', 'STOCK', 'PRICE', 'CHART', 'BUY', 'SELL', 'TODAY', 'LIVE',
+  'NEWS', 'MARKET', 'WATCH', 'TRADE', 'LOGIN', 'LOGOUT', 'PROFILE',
+]);
+
+/**
+ * Returns true if symbol looks like a real instrument (not a UI artifact).
+ */
+function isLiveSymbolValid(sym) {
+  if (!sym || sym.length < 2 || sym.length > 40) return false;
+  if (POPUP_GARBAGE_BLOCKLIST.has(sym.toUpperCase().trim())) return false;
+  if (/^(CTRL|CMD|ALT|ESC|TAB|META)\b/i.test(sym)) return false;
+  return true;
+}
+
+/**
+ * Message active tab content script to detect instrument symbol from screen.
+ * Strategy: ALWAYS do a live content-script scan first.
+ * Only fall back to cached storage if the live scan is unavailable (e.g. restricted page).
  */
 function autoDetectSymbol() {
   const symbolInput = document.getElementById('symbolInput');
@@ -57,43 +94,56 @@ function autoDetectSymbol() {
       const activeTabId = tabs[0].id;
       const tabStorageKey = `tab_symbol_${activeTabId}`;
 
-      if (!chrome.storage || !chrome.storage.local) return;
-
-      // Read ONLY from the ACTIVE tab's isolated storage
-      chrome.storage.local.get(['targetSymbol', tabStorageKey], (result) => {
-        if (chrome.runtime.lastError) return;
-
-        if (result && result.targetSymbol) {
-          symbolInput.value = result.targetSymbol;
-          sourceTag.innerText = 'Saved Selection';
-          chrome.storage.local.remove('targetSymbol');
-          return;
-        }
-
-        const activeTabSymbol = result ? result[tabStorageKey] : null;
-        if (activeTabSymbol && activeTabSymbol.symbol && activeTabSymbol.confidence !== 'Low') {
-          symbolInput.value = activeTabSymbol.symbol;
-          sourceTag.innerText = `${activeTabSymbol.source} (${activeTabSymbol.confidence})`;
-          if (activeTabSymbol.screenLivePrice) {
-            window.detectedScreenPrice = activeTabSymbol.screenLivePrice;
+      // ── STEP 1: Always try the live content-script scan first ─────────────
+      chrome.tabs.sendMessage(activeTabId, { action: 'DETECT_SYMBOL' }, { frameId: 0 }, (liveResponse) => {
+        // If the live scan succeeded and returned a valid (non-garbage) symbol, use it.
+        if (
+          !chrome.runtime.lastError &&
+          liveResponse &&
+          liveResponse.symbol &&
+          liveResponse.confidence !== 'Low' &&
+          isLiveSymbolValid(liveResponse.symbol)
+        ) {
+          symbolInput.value = liveResponse.symbol;
+          if (sourceTag) sourceTag.innerText = `${liveResponse.source} (${liveResponse.confidence})`;
+          if (liveResponse.screenLivePrice) {
+            window.detectedScreenPrice = liveResponse.screenLivePrice;
+          }
+          // Update storage with the freshly validated symbol so future reads are correct
+          if (chrome.storage && chrome.storage.local) {
+            chrome.storage.local.set({ [tabStorageKey]: liveResponse });
           }
           return;
         }
 
-        // Query active tab content script fallback directly
-        chrome.tabs.sendMessage(activeTabId, { action: 'DETECT_SYMBOL' }, (response) => {
-          if (chrome.runtime.lastError || !response) {
-            if (sourceTag) sourceTag.innerText = 'Default';
+        // ── STEP 2: Live scan unavailable or returned garbage — use cache ────
+        if (!chrome.storage || !chrome.storage.local) return;
+        chrome.storage.local.get(['targetSymbol', tabStorageKey], (result) => {
+          if (chrome.runtime.lastError) return;
+
+          // Priority override from context-menu selection
+          if (result && result.targetSymbol && isLiveSymbolValid(result.targetSymbol)) {
+            symbolInput.value = result.targetSymbol;
+            if (sourceTag) sourceTag.innerText = 'Saved Selection';
+            chrome.storage.local.remove('targetSymbol');
             return;
           }
 
-          if (response.symbol) {
-            symbolInput.value = response.symbol;
-            sourceTag.innerText = `${response.source} (${response.confidence})`;
-            if (response.screenLivePrice) {
-              window.detectedScreenPrice = response.screenLivePrice;
+          const cached = result ? result[tabStorageKey] : null;
+          if (cached && cached.symbol && cached.confidence !== 'Low' && isLiveSymbolValid(cached.symbol)) {
+            symbolInput.value = cached.symbol;
+            if (sourceTag) sourceTag.innerText = `${cached.source} (${cached.confidence}) [cached]`;
+            if (cached.screenLivePrice) {
+              window.detectedScreenPrice = cached.screenLivePrice;
             }
+            return;
           }
+
+          // Nothing valid found anywhere — clear stale garbage from storage
+          if (chrome.storage && chrome.storage.local) {
+            chrome.storage.local.remove(tabStorageKey);
+          }
+          if (sourceTag) sourceTag.innerText = 'Not Detected';
         });
       });
     });
@@ -109,26 +159,22 @@ function setupEventListeners() {
   const symbolInput = document.getElementById('symbolInput');
   const rescanBtn = document.getElementById('rescanBtn');
   const analyzeBtn = document.getElementById('analyzeBtn');
-  const tfBtns = document.querySelectorAll('.tf-btn');
-  const rangeBtns = document.querySelectorAll('.range-btn');
+  const rangeSelect = document.getElementById('rangeSelect');
+  const timeframeSelect = document.getElementById('timeframeSelect');
 
-  // Timeframe pills selection
-  tfBtns.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      tfBtns.forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      selectedTimeframe = btn.getAttribute('data-tf');
+  // Lookback dropdown
+  if (rangeSelect) {
+    rangeSelect.addEventListener('change', () => {
+      selectedLookbackDays = parseInt(rangeSelect.value, 10) || 30;
     });
-  });
+  }
 
-  // Lookback Range pills selection
-  rangeBtns.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      rangeBtns.forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      selectedLookbackDays = parseInt(btn.getAttribute('data-range'), 10) || 30;
+  // Timeframe dropdown
+  if (timeframeSelect) {
+    timeframeSelect.addEventListener('change', () => {
+      selectedTimeframe = timeframeSelect.value;
     });
-  });
+  }
 
   // Manual re-scan symbol button
   if (rescanBtn) {
@@ -137,8 +183,22 @@ function setupEventListeners() {
     });
   }
 
-  // Submit Analysis button
+  // Submit Analysis button — toggles to Stop while running
   analyzeBtn.addEventListener('click', () => {
+    if (analyzeBtn.dataset.running === 'true') {
+      // Stop the running analysis (both browser fetch and backend job)
+      if (window._analysisAbortController) {
+        window._analysisAbortController.abort();
+      }
+      if (window._currentJobId) {
+        fetch(`${API_BASE_URL}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: window._currentJobId }),
+        }).catch(() => { });
+      }
+      return;
+    }
     const symbol = symbolInput.value.trim();
     if (!symbol) return;
     executeAnalysis(symbol, selectedTimeframe, selectedLookbackDays);
@@ -149,22 +209,66 @@ function setupEventListeners() {
  * Send POST request to local trading agent backend /analyze
  */
 async function executeAnalysis(symbol, timeframe, lookbackDays) {
+  const analyzeBtn = document.getElementById('analyzeBtn');
+
+  const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+  window._currentJobId = jobId;
+
+  // Switch button to Stop state
+  analyzeBtn.dataset.running = 'true';
+  analyzeBtn.innerHTML = 'Stop Analysis';
+  analyzeBtn.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+  analyzeBtn.style.boxShadow = '0 4px 15px rgba(239, 68, 68, 0.4)';
+
+  const resetBtn = () => {
+    analyzeBtn.dataset.running = 'false';
+    analyzeBtn.innerHTML = 'Run Agent Analysis';
+    analyzeBtn.style.background = '';
+    analyzeBtn.style.boxShadow = '';
+    window._analysisAbortController = null;
+    window._currentJobId = null;
+  };
+
+  // Create abort controller for this request
+  const controller = new AbortController();
+  window._analysisAbortController = controller;
+
   showLoading(true);
   hideError();
   hideResultCard();
 
-  updateLoadingProgress('Querying Finvedas Agents...', `Analyzing ${symbol} (${lookbackDays}d lookback, ${timeframe.replace('_', ' ')})...`);
+  // ── Start dynamic thinking animation ─────────────────────────────────
+  startThinkingAnimation(symbol, timeframe, lookbackDays);
+
+  // Re-detect live price fresh at analysis time for maximum accuracy
+  let screenLivePrice = window.detectedScreenPrice || null;
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab?.id) {
+      const freshResponse = await new Promise((resolve) => {
+        chrome.tabs.sendMessage(activeTab.id, { action: 'DETECT_SYMBOL' }, { frameId: 0 }, (resp) => {
+          resolve(resp || {});
+        });
+      });
+      if (freshResponse?.screenLivePrice) {
+        screenLivePrice = freshResponse.screenLivePrice;
+        window.detectedScreenPrice = screenLivePrice;
+      }
+    }
+  } catch (_) { }
 
   try {
     const res = await fetch(`${API_BASE_URL}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        jobId,
         symbol,
         timeframe,
         lookback_days: lookbackDays,
-        screen_live_price: window.detectedScreenPrice || null
+        screen_live_price: screenLivePrice
       }),
+      signal: controller.signal
     });
 
     const data = await res.json();
@@ -181,10 +285,81 @@ async function executeAnalysis(symbol, timeframe, lookbackDays) {
     renderResults(data);
 
   } catch (err) {
-    showError('Connection Error', `Failed to connect to trading agent backend at ${API_BASE_URL}. Please ensure 'npm run dev' is running.`);
+    if (err.name === 'AbortError') {
+      hideError();
+      hideResultCard();
+    } else {
+      showError('Connection Error', `Failed to connect to trading agent backend at ${API_BASE_URL}. Please ensure 'npm run dev' is running.`);
+    }
   } finally {
+    stopThinkingAnimation();
     showLoading(false);
+    resetBtn();
   }
+}
+
+// ─── Thinking Animation Engine ──────────────────────────────────────────────────
+let _thinkingIntervalId = null;
+
+function startThinkingAnimation(symbol, timeframe, lookbackDays) {
+  const tf = timeframe.replace('_', ' ');
+  const sym = symbol.trim();
+
+  // Contextual message pairs: [headline, subtext]
+  const messages = [
+    ['🧠 Thinking...', `Reviewing ${sym} across all timeframes`],
+    ['📡 Fetching live market data...', `Connecting to Kite & Yahoo Finance for ${sym}`],
+    [`📊 Loading ${lookbackDays}-day candle history...`, `Scanning 1m, 5m, 15m, 1hr candles for ${sym}`],
+    ['💹 Calculating technical indicators...', 'RSI · MACD · Bollinger Bands · VWAP · EMA'],
+    ['🔍 Running multi-timeframe analysis...', `Checking trend alignment across ${tf} candles`],
+    ['📰 Analysing market sentiment...', 'PCR · Smart money flows · Fear & Greed index'],
+    ['🕯 Detecting chart patterns...', 'Head & Shoulders · Flags · Wedges · Breakouts'],
+    ["📅 Reviewing yesterday's market action...", `How did ${sym} behave in recent sessions?`],
+    ['⚡ Checking support & resistance levels...', `Mapping key price zones for ${sym}`],
+    ['📈 Measuring momentum & volume...', 'Volume spike detection · Institutional activity'],
+    ['🤖 Querying Finvedas AI agents...', 'Market Analyst · Sentiment Agent · Pattern Agent'],
+    ['🎯 Synthesising agent signals...', 'Weighing confluence across all 3 sub-agents'],
+    ['🔮 Computing entry, target & stop-loss...', `Anchoring to live price of ${sym}`],
+    ['⏱ Estimating hold duration...', 'Calculating optimal trade window for your timeframe'],
+    ['📐 Calculating risk : reward ratio...', 'Profit potential vs. downside exposure'],
+    ['✍️ Writing your trade plan...', `Almost done analysing ${sym}...`],
+  ];
+
+  let idx = 0;
+  const stepEl = document.getElementById('loadingStep');
+  const subEl = document.getElementById('loadingSubtext');
+
+  const show = () => {
+    if (!stepEl || !subEl) return;
+    const [headline, sub] = messages[idx % messages.length];
+    // Fade out → update → fade in
+    stepEl.style.transition = 'opacity 0.3s ease';
+    subEl.style.transition = 'opacity 0.3s ease';
+    stepEl.style.opacity = '0';
+    subEl.style.opacity = '0';
+    setTimeout(() => {
+      stepEl.innerText = headline;
+      subEl.innerText = sub;
+      stepEl.style.opacity = '1';
+      subEl.style.opacity = '1';
+    }, 300);
+    idx++;
+  };
+
+  show(); // show immediately
+  _thinkingIntervalId = setInterval(show, 2600);
+}
+
+function stopThinkingAnimation() {
+  if (_thinkingIntervalId !== null) {
+    clearInterval(_thinkingIntervalId);
+    _thinkingIntervalId = null;
+  }
+  // Restore opacity in case it was mid-fade
+  const stepEl = document.getElementById('loadingStep');
+  const subEl = document.getElementById('loadingSubtext');
+  if (stepEl) { stepEl.style.opacity = '1'; stepEl.style.transition = ''; }
+  if (subEl) { subEl.style.opacity = '1'; subEl.style.transition = ''; }
 }
 
 /**
@@ -242,6 +417,70 @@ function renderResults(data) {
   applyAgentTag(sentimentTag, agents.sentiment?.sentimentSignal || agents.sentiment?.sentiment?.overall_sentiment || 'NEUTRAL');
   applyAgentTag(patternTag, agents.pattern?.patternBias || agents.pattern?.pattern_analysis?.pattern_bias || 'NEUTRAL');
 
+  // ── Hold Duration ────────────────────────────────────────────────────
+  const holdUntilVal = document.getElementById('holdUntilVal');
+  const holdMinsVal = document.getElementById('holdMinsVal');
+  const holdText = signal.hold_until || signal.timeframe_to_play || null;
+  const holdMins = signal.max_hold_duration_minutes || null;
+  if (holdUntilVal) holdUntilVal.innerText = holdText || '—';
+  if (holdMinsVal) {
+    if (holdMins && holdMins > 0) {
+      const h = Math.floor(holdMins / 60);
+      const m = holdMins % 60;
+      holdMinsVal.innerText = h > 0 ? `≈ ${h}h ${m > 0 ? m + 'm' : ''}`.trim() : `≈ ${m}m`;
+    } else {
+      holdMinsVal.innerText = '';
+    }
+  }
+
+  // ── Profit Potential ─────────────────────────────────────────────────
+  const profitPctVal = document.getElementById('profitPctVal');
+  const profitAbsVal = document.getElementById('profitAbsVal');
+  const profitPct = signal.profit_potential_pct;
+  const profitAbs = signal.profit_abs;
+  if (profitPctVal) {
+    if (profitPct !== null && profitPct !== undefined) {
+      const sign = profitPct >= 0 ? '+' : '';
+      profitPctVal.innerText = `${sign}${profitPct}%`;
+    } else { profitPctVal.innerText = '—'; }
+  }
+  if (profitAbsVal) {
+    if (profitAbs !== null && profitAbs !== undefined) {
+      const sign = profitAbs >= 0 ? '+' : '';
+      profitAbsVal.innerText = `${sign}₹${Math.abs(profitAbs).toLocaleString('en-IN', { maximumFractionDigits: 2 })} / share`;
+    } else { profitAbsVal.innerText = ''; }
+  }
+
+  // ── Risk ─────────────────────────────────────────────────────────────
+  const riskPctEl = document.getElementById('riskPctVal');
+  const riskAbsEl = document.getElementById('riskAbsVal');
+  const riskPct = signal.risk_pct;
+  const riskAbs = signal.risk_abs;
+  if (riskPctEl) {
+    riskPctEl.innerText = (riskPct !== null && riskPct !== undefined) ? `-${riskPct}%` : '—';
+  }
+  if (riskAbsEl) {
+    if (riskAbs !== null && riskAbs !== undefined) {
+      riskAbsEl.innerText = `-₹${Number(riskAbs).toLocaleString('en-IN', { maximumFractionDigits: 2 })} / share`;
+    } else { riskAbsEl.innerText = ''; }
+  }
+
+  // ── Risk : Reward ────────────────────────────────────────────────────
+  const rrRatioEl = document.getElementById('rrRatioVal');
+  const rrQualityEl = document.getElementById('rrQualityVal');
+  const rr = signal.risk_reward_computed || signal.risk_reward;
+  if (rrRatioEl) {
+    if (rr !== null && rr !== undefined) {
+      rrRatioEl.innerText = `1 : ${Number(rr).toFixed(2)}`;
+    } else { rrRatioEl.innerText = '—'; }
+  }
+  if (rrQualityEl) {
+    if (rr !== null && rr !== undefined) {
+      const rrNum = Number(rr);
+      rrQualityEl.innerText = rrNum >= 2 ? '✅ Excellent' : rrNum >= 1.5 ? '👍 Good' : rrNum >= 1 ? '⚠ Marginal' : '❌ Poor';
+    } else { rrQualityEl.innerText = ''; }
+  }
+
   resultCard.classList.remove('hidden');
 }
 
@@ -288,3 +527,12 @@ function showError(title, message) {
 function hideError() {
   document.getElementById('errorCard').classList.add('hidden');
 }
+
+// --- Dynamic Widget Resizing ---
+const resizeObserver = new ResizeObserver(() => {
+  if (window.parent) {
+    const height = document.body.scrollHeight;
+    window.parent.postMessage({ action: 'RESIZE_WIDGET', height }, '*');
+  }
+});
+resizeObserver.observe(document.body);

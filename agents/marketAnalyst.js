@@ -24,8 +24,9 @@ const summarizeIndicators = (ind, tf) => {
 
 // ─── Market Analyst Agent ────────────────────────────────
 // Multi-timeframe: Deep historical 1M+ candle & multi-timeframe confluence
-export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays = 30, screenLivePrice = null) => {
+export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays = 30, screenLivePrice = null, abortSignal = null) => {
   try {
+    if (abortSignal?.aborted) throw new Error('Analysis aborted by user.');
     console.log(`📊 Market Analyst analyzing ${symbol} (${lookbackDays}d lookback range)...`);
 
     // Tier 1: Try Zerodha Kite Connect API
@@ -190,6 +191,7 @@ Respond ONLY with valid JSON. No explanation outside JSON.
       prompt,
       maxTokens: 5000,
       temperature: 0.1,
+      signal: abortSignal,
     });
 
     const analysis = parseLLMJson(rawText);

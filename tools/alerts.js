@@ -37,12 +37,16 @@ export async function runLLMCompletion({
   prompt,
   maxTokens = 2500,
   temperature = 0.1,
+  signal = null,
 }) {
+  if (signal?.aborted) throw new Error('Analysis aborted by user.');
+
   // Priority 1: OpenRouter — gpt-oss-120b
   if (process.env.OPENROUTER_API_KEY) {
     const openRouterModels = ['openai/gpt-oss-120b'];
 
     for (const model of openRouterModels) {
+      if (signal?.aborted) throw new Error('Analysis aborted by user.');
       try {
         console.log(`🌐 Requesting LLM: OpenRouter (${model})...`);
         const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -62,6 +66,7 @@ export async function runLLMCompletion({
               { role: 'user', content: prompt },
             ],
           }),
+          signal: signal || undefined,
         });
 
         const data = await res.json();
@@ -74,6 +79,7 @@ export async function runLLMCompletion({
           throw new Error(JSON.stringify(data.error));
         }
       } catch (err) {
+        if (err.name === 'AbortError' || signal?.aborted) throw new Error('Analysis aborted by user.');
         console.warn(`⚠️ OpenRouter model '${model}' failed: ${String(err.message).substring(0, 120)}. Trying fallback...`);
       }
     }
@@ -85,6 +91,7 @@ export async function runLLMCompletion({
     const anthropicModels = ['claude-sonnet-4-6'];
 
     for (const model of anthropicModels) {
+      if (signal?.aborted) throw new Error('Analysis aborted by user.');
       try {
         console.log(`🧠 Fallback LLM: Anthropic (${model})...`);
         const response = await anthropicClient.messages.create({
@@ -95,7 +102,7 @@ export async function runLLMCompletion({
           messages: [
             { role: 'user', content: prompt },
           ],
-        });
+        }, { signal: signal || undefined });
 
         const text = response?.content?.[0]?.text;
         if (text) {
@@ -103,6 +110,7 @@ export async function runLLMCompletion({
           return text;
         }
       } catch (err) {
+        if (err.name === 'AbortError' || signal?.aborted) throw new Error('Analysis aborted by user.');
         console.warn(`⚠️ Anthropic model '${model}' failed: ${err.message?.substring(0, 120) || err}. Trying fallback...`);
       }
     }
@@ -114,6 +122,7 @@ export async function runLLMCompletion({
     const geminiModels = ['gemini-3.5-flash-lite'];
 
     for (const model of geminiModels) {
+      if (signal?.aborted) throw new Error('Analysis aborted by user.');
       try {
         console.log(`🤖 Fallback LLM: Gemini (${model})...`);
         const res = await geminiClient.models.generateContent({
@@ -131,6 +140,7 @@ export async function runLLMCompletion({
           return res.text;
         }
       } catch (err) {
+        if (err.name === 'AbortError' || signal?.aborted) throw new Error('Analysis aborted by user.');
         console.warn(`⚠️ Gemini model '${model}' failed/rate limited: ${err.message.substring(0, 100)}. Trying fallback...`);
       }
     }
@@ -145,6 +155,7 @@ export async function runLLMCompletion({
     ];
 
     for (const model of groqModels) {
+      if (signal?.aborted) throw new Error('Analysis aborted by user.');
       try {
         console.log(`🔄 Fallback LLM: Groq (${model})...`);
         const response = await groqClient.chat.completions.create({
@@ -155,18 +166,20 @@ export async function runLLMCompletion({
             { role: 'system', content: systemPrompt },
             { role: 'user', content: prompt },
           ],
-        });
+        }, { signal: signal || undefined });
 
         if (response?.choices?.[0]?.message?.content) {
           console.log(`✅ Groq (${model}) response received.`);
           return response.choices[0].message.content;
         }
       } catch (err) {
+        if (err.name === 'AbortError' || signal?.aborted) throw new Error('Analysis aborted by user.');
         console.warn(`⚠️ Groq model '${model}' failed: ${err.message.substring(0, 120)}. Trying next...`);
       }
     }
   }
 
+  if (signal?.aborted) throw new Error('Analysis aborted by user.');
   throw new Error('All LLM providers (OpenRouter, Anthropic, Gemini & Groq) failed to generate a response.');
 }
 

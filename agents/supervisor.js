@@ -20,8 +20,8 @@ const calculateSignalStrength = (marketAnalysis, sentiment, patterns) => {
     if (a.macd?.trend === 'BULLISH') bullishScore += 10;
     if (a.macd?.trend === 'BEARISH') bearishScore += 10;
     // MTF alignment bonus — all timeframes agreeing = strong conviction
-    if (marketAnalysis.mtf_alignment === 'ALL_BULLISH')  bullishScore += 20;
-    if (marketAnalysis.mtf_alignment === 'ALL_BEARISH')  bearishScore += 20;
+    if (marketAnalysis.mtf_alignment === 'ALL_BULLISH') bullishScore += 20;
+    if (marketAnalysis.mtf_alignment === 'ALL_BEARISH') bearishScore += 20;
     if (marketAnalysis.mtf_alignment === 'MOSTLY_BULLISH') bullishScore += 10;
     if (marketAnalysis.mtf_alignment === 'MOSTLY_BEARISH') bearishScore += 10;
   }
@@ -31,15 +31,15 @@ const calculateSignalStrength = (marketAnalysis, sentiment, patterns) => {
     const s = sentiment.sentiment;
     if (s.overall_sentiment === 'BULLISH') bullishScore += 20;
     if (s.overall_sentiment === 'BEARISH') bearishScore += 20;
-    if (s.smart_money === 'BUYING')  bullishScore += 15;
+    if (s.smart_money === 'BUYING') bullishScore += 15;
     if (s.smart_money === 'SELLING') bearishScore += 15;
-    if (s.pcr_signal === 'BULLISH')  bullishScore += 10;
-    if (s.pcr_signal === 'BEARISH')  bearishScore += 10;
+    if (s.pcr_signal === 'BULLISH') bullishScore += 10;
+    if (s.pcr_signal === 'BEARISH') bearishScore += 10;
     // Active position bias bonus
-    if (sentiment.active_position_bias === 'NET_LONG')  bullishScore += 10;
+    if (sentiment.active_position_bias === 'NET_LONG') bullishScore += 10;
     if (sentiment.active_position_bias === 'NET_SHORT') bearishScore += 10;
     // Fear/Greed contrarian signal
-    if (sentiment.fear_greed === 'FEAR')  bullishScore += 5;  // contrarian
+    if (sentiment.fear_greed === 'FEAR') bullishScore += 5;  // contrarian
     if (sentiment.fear_greed === 'GREED') bearishScore += 5;  // contrarian
   }
 
@@ -48,7 +48,7 @@ const calculateSignalStrength = (marketAnalysis, sentiment, patterns) => {
     const p = patterns.pattern_analysis;
     if (p.pattern_bias === 'BULLISH') bullishScore += 20;
     if (p.pattern_bias === 'BEARISH') bearishScore += 20;
-    if (p.breakout_direction === 'UP')   bullishScore += 10;
+    if (p.breakout_direction === 'UP') bullishScore += 10;
     if (p.breakout_direction === 'DOWN') bearishScore += 10;
   }
 
@@ -60,13 +60,13 @@ const calculateSignalStrength = (marketAnalysis, sentiment, patterns) => {
   return {
     bullish_score: bullishScore,
     bearish_score: bearishScore,
-    bullish_pct:   bullishPct,
-    bearish_pct:   bearishPct,
-    net_score:     netScore,
-    direction:     netScore > 20  ? 'BULLISH' :
-                   netScore < -20 ? 'BEARISH' : 'NEUTRAL',
-    strength:      Math.abs(netScore) > 50 ? 'STRONG' :
-                   Math.abs(netScore) > 25 ? 'MODERATE' : 'WEAK',
+    bullish_pct: bullishPct,
+    bearish_pct: bearishPct,
+    net_score: netScore,
+    direction: netScore > 20 ? 'BULLISH' :
+      netScore < -20 ? 'BEARISH' : 'NEUTRAL',
+    strength: Math.abs(netScore) > 50 ? 'STRONG' :
+      Math.abs(netScore) > 25 ? 'MODERATE' : 'WEAK',
   };
 };
 
@@ -78,8 +78,10 @@ export const supervisor = async ({
   marketAnalysis,
   sentiment,
   patterns,
+  abortSignal = null,
 }) => {
   try {
+    if (abortSignal?.aborted) throw new Error('Analysis aborted by user.');
     console.log(`\n🤖 Supervisor synthesizing agent signals for ${symbol} (${lookbackDays}d lookback)...`);
 
     // Fast-fail if instrument/company does NOT exist in Snowflake DB
@@ -202,6 +204,8 @@ Respond in this EXACT JSON format:
   "stop_loss": <number or null>,
   "risk_reward": <number or null>,
   "timeframe_to_play": "<e.g. 1-2 hours, intraday, swing>",
+  "hold_until": "<specific human-readable time estimate to hold the trade, e.g. '3:15 PM IST (End of Day)', 'Within 2-3 hours', '1-2 trading sessions', 'Until next resistance at ₹720'>",
+  "max_hold_duration_minutes": <integer: estimated minutes to hold before reassessing, e.g. 60 for 1hr trade, 390 for full day>,
   "confluence_factors": [
     "<factor 1 where agents agree>",
     "<factor 2 where agents agree>"
@@ -237,6 +241,7 @@ Always include disclaimer that this is not financial advice.`;
       prompt,
       maxTokens: 2500,
       temperature: 0.1,
+      signal: abortSignal,
     });
 
     const finalSignal = parseLLMJson(rawText);
@@ -258,14 +263,14 @@ Always include disclaimer that this is not financial advice.`;
     ) {
       await sendAlert({
         symbol,
-        signal:     finalSignal.final_signal,
-        direction:  finalSignal.direction,
+        signal: finalSignal.final_signal,
+        direction: finalSignal.direction,
         confidence: finalSignal.confidence,
-        entry:      finalSignal.entry_price,
-        target:     finalSignal.target_price,
-        stopLoss:   finalSignal.stop_loss,
-        action:     finalSignal.action,
-        reasoning:  finalSignal.reasoning,
+        entry: finalSignal.entry_price,
+        target: finalSignal.target_price,
+        stopLoss: finalSignal.stop_loss,
+        action: finalSignal.action,
+        reasoning: finalSignal.reasoning,
       });
     }
 
@@ -308,6 +313,17 @@ Always include disclaimer that this is not financial advice.`;
       }
     }
 
+    // ── Compute profit / risk metrics (arithmetic, no LLM needed) ──────────
+    const profitAbs = (targetPrice && entryPrice) ? Number((targetPrice - entryPrice).toFixed(2)) : null;
+    const riskAbs = (entryPrice && stopLoss) ? Number((entryPrice - stopLoss).toFixed(2)) : null;
+    const profitPct = (profitAbs !== null && entryPrice) ? Number(((profitAbs / entryPrice) * 100).toFixed(2)) : null;
+    const riskPct = (riskAbs !== null && entryPrice) ? Number(((Math.abs(riskAbs) / entryPrice) * 100).toFixed(2)) : null;
+    const rrRatio = (profitAbs !== null && riskAbs && riskAbs > 0) ? Number((profitAbs / riskAbs).toFixed(2)) : null;
+
+    // Fallback for hold_until if LLM didn't return it
+    const holdUntil = finalSignal.hold_until || finalSignal.timeframe_to_play || null;
+    const holdMins = finalSignal.max_hold_duration_minutes || null;
+
     return {
       ...finalSignal,
       current_price: currentPrice,
@@ -315,17 +331,25 @@ Always include disclaimer that this is not financial advice.`;
       target_price: targetPrice,
       stop_loss: stopLoss,
       signal_strength: signalStrength,
+      // ── New: Hold & Profit fields ──────────────────────────────
+      hold_until: holdUntil,
+      max_hold_duration_minutes: holdMins,
+      profit_abs: profitAbs,
+      profit_potential_pct: profitPct,
+      risk_abs: riskAbs ? Math.abs(riskAbs) : null,
+      risk_pct: riskPct,
+      risk_reward_computed: rrRatio,
     };
 
   } catch (error) {
     console.error('❌ Supervisor error:', error.message);
     return {
-      error:        error.message,
+      error: error.message,
       symbol,
       final_signal: 'HOLD',
-      direction:    'NEUTRAL',
-      confidence:   0,
-      reasoning:    'Error in analysis pipeline',
+      direction: 'NEUTRAL',
+      confidence: 0,
+      reasoning: 'Error in analysis pipeline',
     };
   }
 };

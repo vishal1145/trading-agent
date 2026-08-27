@@ -38,8 +38,41 @@ app.get('/instruments', async (req, res) => {
   }
 });
 
+// ─── Active Job Registry for Backend Cancellation ────────
+const activeJobs = new Map();
+
+// ─── Cancel Endpoint ─────────────────────────────────────
+app.post('/cancel', (req, res) => {
+  const jobId = req.body?.jobId;
+  if (jobId && activeJobs.has(jobId)) {
+    console.log(`🛑 Received explicit cancellation for job '${jobId}'. Aborting backend analysis pipeline...`);
+    const controller = activeJobs.get(jobId);
+    controller.abort();
+    activeJobs.delete(jobId);
+    return res.json({ success: true, message: `Job '${jobId}' cancelled successfully.` });
+  }
+  res.json({ success: true, message: 'Job not active or already completed.' });
+});
+
 // ─── Main Analysis Endpoint ─────────────────────────────
 app.post('/analyze', async (req, res) => {
+  const jobId = req.body.jobId || null;
+  const jobController = new AbortController();
+  const signal = jobController.signal;
+
+  if (jobId) {
+    activeJobs.set(jobId, jobController);
+  }
+
+  // Handle client connection disconnect (only if client genuinely aborted socket)
+  res.on('close', () => {
+    if (!res.writableEnded && req.aborted && !signal.aborted) {
+      console.log(`🛑 Client aborted connection socket${jobId ? ` for job '${jobId}'` : ''}. Aborting backend execution...`);
+      jobController.abort();
+      if (jobId) activeJobs.delete(jobId);
+    }
+  });
+
   try {
     const rawSymbol = req.body.symbol || 'NIFTY 50';
     const timeframe = req.body.timeframe || '1_hour';
@@ -47,11 +80,15 @@ app.post('/analyze', async (req, res) => {
     const screenLivePrice = req.body.screen_live_price || req.body.screenLivePrice || null;
     const symbol = normalizeSymbol(rawSymbol);
 
-    console.log(`\n🔍 Analyzing ${symbol} (raw: "${rawSymbol}") on ${timeframe} timeframe (${lookbackDays}d lookback)...`);
+    console.log(`\n🔍 Analyzing ${symbol} (raw: "${rawSymbol}") on ${timeframe} timeframe (${lookbackDays}d lookback)${jobId ? ` [Job: ${jobId}]` : ''}...`);
+
+    if (signal.aborted) throw new Error('Analysis aborted by user.');
 
     // Step 1: Run Market Analyst first to fetch live candles (Zerodha / Yahoo Finance)
     console.log('📊 Running agents...');
-    const marketAnalysis = await marketAnalyst(symbol, timeframe, lookbackDays, screenLivePrice);
+    const marketAnalysis = await marketAnalyst(symbol, timeframe, lookbackDays, screenLivePrice, signal);
+
+    if (signal.aborted) throw new Error('Analysis aborted by user.');
 
     // Fast-fail if instrument does not exist or has no candle data
     if (marketAnalysis?.error) {
@@ -67,9 +104,11 @@ app.post('/analyze', async (req, res) => {
 
     // Run Sentiment & Pattern agents using live candles
     const [sentiment, patterns] = await Promise.all([
-      sentimentAgent(symbol),
-      patternAgent(symbol, timeframe, marketAnalysis?.candles),
+      sentimentAgent(symbol, signal),
+      patternAgent(symbol, timeframe, marketAnalysis?.candles, signal),
     ]);
+
+    if (signal.aborted) throw new Error('Analysis aborted by user.');
 
     console.log('✅ All agents done. Sending to supervisor...');
 
@@ -81,7 +120,10 @@ app.post('/analyze', async (req, res) => {
       marketAnalysis,
       sentiment,
       patterns,
+      abortSignal: signal,
     });
+
+    if (signal.aborted) throw new Error('Analysis aborted by user.');
 
     // Step 3: Return result with complete sub-agent outputs for rich UI display
     res.json({
@@ -100,8 +142,19 @@ app.post('/analyze', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error:', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    if (signal.aborted || error.message?.includes('aborted')) {
+      console.log(`🛑 Job ${jobId || 'execution'} gracefully aborted.`);
+      if (!res.headersSent) {
+        res.status(499).json({ success: false, error: 'Client closed request / analysis aborted.' });
+      }
+    } else {
+      console.error('❌ Error:', error.message);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    }
+  } finally {
+    if (jobId) activeJobs.delete(jobId);
   }
 });
 

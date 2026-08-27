@@ -1,28 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Finvedas Trading Agent AI</title>
   <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
   <div class="app-container">
-    
-    <!-- ─── Header ────────────────────────────────────── -->
-    <header class="header">
-      <div class="brand">
-        <div class="brand-icon">⚡</div>
-        <div class="brand-title">Finvedas AI Agent</div>
-      </div>
-    </header>
 
     <!-- ─── Instrument Input & Screen Detection Card ──── -->
     <section class="instrument-card">
-      <div class="detected-meta">
-        <span>Detected on Screen:</span>
-        <span class="source-tag" id="sourceTag">Auto-Detecting...</span>
-      </div>
 
       <div class="input-row">
         <input type="text" id="symbolInput" class="symbol-input" placeholder="e.g. RELIANCE, NIFTY 50" value="NIFTY 50">
@@ -31,26 +21,37 @@
         </button>
       </div>
 
-      <div class="range-label">Lookback History Range:</div>
-      <div class="range-row">
-        <button class="range-btn" data-range="7">7 Days</button>
-        <button class="range-btn active" data-range="30">30 Days</button>
-        <button class="range-btn" data-range="90">90 Days</button>
-        <button class="range-btn" data-range="365">1 Year</button>
-      </div>
-
-      <div class="range-label" style="margin-top: 8px;">Candle Timeframe:</div>
-      <div class="timeframe-row">
-        <button class="tf-btn" data-tf="1_minute">1m</button>
-        <button class="tf-btn" data-tf="5_minute">5m</button>
-        <button class="tf-btn" data-tf="15_minute">15m</button>
-        <button class="tf-btn active" data-tf="1_hour">1 Hour</button>
-        <button class="tf-btn" data-tf="1_day">Daily</button>
-        <button class="tf-btn" data-tf="1_week">Weekly</button>
+      <div class="selects-row">
+        <div class="select-wrap">
+          <label class="select-label">📅 Lookback</label>
+          <div class="custom-select-box">
+            <select id="rangeSelect" class="custom-select">
+              <option value="7">7 Days</option>
+              <option value="30" selected>30 Days</option>
+              <option value="90">90 Days</option>
+              <option value="365">1 Year</option>
+            </select>
+            <span class="select-arrow">▾</span>
+          </div>
+        </div>
+        <div class="select-wrap">
+          <label class="select-label">⏱ Candle Timeframe</label>
+          <div class="custom-select-box">
+            <select id="timeframeSelect" class="custom-select">
+              <option value="1_minute">1m</option>
+              <option value="5_minute">5m</option>
+              <option value="15_minute">15m</option>
+              <option value="1_hour" selected>1 Hour</option>
+              <option value="1_day">Daily</option>
+              <option value="1_week">Weekly</option>
+            </select>
+            <span class="select-arrow">▾</span>
+          </div>
+        </div>
       </div>
 
       <button id="analyzeBtn" class="analyze-btn">
-        <span>⚡</span> Run Multi-Agent Analysis
+        Run Agent Analysis
       </button>
     </section>
 
@@ -113,6 +114,43 @@
           <span class="agent-tag" id="patternTag">BULLISH</span>
         </div>
       </div>
+
+      <!-- ── Hold Duration + Profit Potential ──────────────── -->
+      <div class="trade-metrics-grid">
+        <div class="trade-metric-item hold-item">
+          <div class="tm-icon">⏱</div>
+          <div class="tm-body">
+            <div class="tm-label">Hold Until</div>
+            <div class="tm-value" id="holdUntilVal">—</div>
+            <div class="tm-sub" id="holdMinsVal"></div>
+          </div>
+        </div>
+        <div class="trade-metric-item profit-item">
+          <div class="tm-icon">📈</div>
+          <div class="tm-body">
+            <div class="tm-label">Profit Potential</div>
+            <div class="tm-value profit-pct" id="profitPctVal">—</div>
+            <div class="tm-sub" id="profitAbsVal"></div>
+          </div>
+        </div>
+        <div class="trade-metric-item risk-item">
+          <div class="tm-icon">🛡</div>
+          <div class="tm-body">
+            <div class="tm-label">Risk</div>
+            <div class="tm-value risk-pct" id="riskPctVal">—</div>
+            <div class="tm-sub" id="riskAbsVal"></div>
+          </div>
+        </div>
+        <div class="trade-metric-item rr-item">
+          <div class="tm-icon">⚖</div>
+          <div class="tm-body">
+            <div class="tm-label">Risk : Reward</div>
+            <div class="tm-value" id="rrRatioVal">—</div>
+            <div class="tm-sub" id="rrQualityVal"></div>
+          </div>
+        </div>
+      </div>
+
     </section>
 
     <!-- ─── Error Notification ────────────────────────── -->
@@ -125,4 +163,5 @@
 
   <script src="popup.js"></script>
 </body>
+
 </html>
