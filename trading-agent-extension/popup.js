@@ -2,8 +2,8 @@
  * Finvedas Trading Agent - Extension Popup Controller
  */
 
-// let API_BASE_URL = 'https://api.tradingagent.chandankumal.in';
-const FALLBACK_API_URL = 'http://localhost:3000';
+let API_BASE_URL = 'https://api.tradingagent.chandankumal.in';
+// const FALLBACK_API_URL = 'http://localhost:3000';
 
 let selectedTimeframe = '1_hour';
 let selectedLookbackDays = 30;
@@ -159,22 +159,26 @@ function setupEventListeners() {
   const symbolInput = document.getElementById('symbolInput');
   const rescanBtn = document.getElementById('rescanBtn');
   const analyzeBtn = document.getElementById('analyzeBtn');
-  const rangeSelect = document.getElementById('rangeSelect');
-  const timeframeSelect = document.getElementById('timeframeSelect');
 
-  // Lookback dropdown
-  if (rangeSelect) {
-    rangeSelect.addEventListener('change', () => {
-      selectedLookbackDays = parseInt(rangeSelect.value, 10) || 30;
+  // Lookback chip buttons
+  const lookbackPills = document.querySelectorAll('#lookbackPills .chip');
+  lookbackPills.forEach(btn => {
+    btn.addEventListener('click', () => {
+      lookbackPills.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedLookbackDays = parseInt(btn.dataset.value, 10) || 30;
     });
-  }
+  });
 
-  // Timeframe dropdown
-  if (timeframeSelect) {
-    timeframeSelect.addEventListener('change', () => {
-      selectedTimeframe = timeframeSelect.value;
+  // Candle Timeframe chip buttons
+  const timeframePills = document.querySelectorAll('#timeframePills .chip');
+  timeframePills.forEach(btn => {
+    btn.addEventListener('click', () => {
+      timeframePills.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedTimeframe = btn.dataset.value;
     });
-  }
+  });
 
   // Manual re-scan symbol button
   if (rescanBtn) {
@@ -317,7 +321,7 @@ function startThinkingAnimation(symbol, timeframe, lookbackDays) {
     ["📅 Reviewing yesterday's market action...", `How did ${sym} behave in recent sessions?`],
     ['⚡ Checking support & resistance levels...', `Mapping key price zones for ${sym}`],
     ['📈 Measuring momentum & volume...', 'Volume spike detection · Institutional activity'],
-    ['🤖 Querying Finvedas AI agents...', 'Market Analyst · Sentiment Agent · Pattern Agent'],
+    ['🤖 Querying Trading AI agents...', 'Market Analyst · Sentiment Agent · Pattern Agent'],
     ['🎯 Synthesising agent signals...', 'Weighing confluence across all 3 sub-agents'],
     ['🔮 Computing entry, target & stop-loss...', `Anchoring to live price of ${sym}`],
     ['⏱ Estimating hold duration...', 'Calculating optimal trade window for your timeframe'],

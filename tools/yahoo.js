@@ -31,6 +31,28 @@ export const normalizeYahooSymbol = async (rawSymbol) => {
 };
 
 /**
+ * Fetch Live LTP (Last Traded Price) from Yahoo Finance
+ * Returns normalised shape: { symbol, PRICE, VOLUME_TRADED_TODAY, source }
+ */
+export const getYahooLTP = async (rawSymbol) => {
+  try {
+    const symbol = await normalizeYahooSymbol(rawSymbol);
+    const quote = await yahoo.quote(symbol);
+    if (!quote || !quote.regularMarketPrice) return null;
+    return {
+      symbol: rawSymbol.toString().trim().toUpperCase(),
+      PRICE: quote.regularMarketPrice,
+      VOLUME_TRADED_TODAY: quote.regularMarketVolume || 0,
+      TIME: new Date().toISOString(),
+      source: 'Yahoo Finance',
+    };
+  } catch (err) {
+    console.warn(`⚠️ Yahoo Finance LTP fetch failed for ${rawSymbol}:`, err.message);
+    return null;
+  }
+};
+
+/**
  * Map timeframe string to Yahoo interval
  */
 const mapYahooInterval = (timeframe) => {

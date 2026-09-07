@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
@@ -17,7 +18,7 @@
     "@langchain/anthropic": "^1.5.6",
     "@langchain/core": "^1.2.8",
     "@langchain/langgraph": "^1.4.10",
-    "better-sqlite3": "^13.0.3",
+    "@prisma/client": "^5.22.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -25,6 +26,7 @@
     "kiteconnect": "^5.3.0",
     "node-telegram-bot-api": "^2.0.0",
     "nodemailer": "^9.0.5",
+    "prisma": "^5.22.0",
     "rss-parser": "^3.13.0",
     "snowflake-sdk": "^3.2.0",
     "technicalindicators": "^3.1.0",
@@ -33,5 +35,10 @@
   "keywords": [],
   "devDependencies": {
     "nodemon": "^3.1.14"
+  },
+  "allowScripts": {
+    "@prisma/client@5.22.0": true,
+    "prisma@5.22.0": true,
+    "@prisma/engines@5.22.0": true
   }
 }

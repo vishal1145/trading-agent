@@ -24,30 +24,48 @@ export const getKiteInstance = () => {
 };
 
 /**
- * Fetch and cache Zerodha instrument list (refreshed daily)
+ * Fetch and cache Zerodha instrument list (refreshed daily, cached globally for 24 hours)
  */
 export const getInstrumentsList = async () => {
   const now = Date.now();
-  // Cache for 12 hours
-  if (instrumentsCache && (now - lastInstrumentsFetch < 12 * 60 * 60 * 1000)) {
-    return instrumentsCache;
+  const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+  const RETRY_TTL = 1 * 60 * 60 * 1000;  // 1 hour if credentials invalid/missing
+
+  if (globalThis._kiteInstrumentsCache && (now - (globalThis._lastKiteInstrumentsFetch || 0) < CACHE_TTL)) {
+    return globalThis._kiteInstrumentsCache;
+  }
+
+  // Fast fail if recently attempted with no credentials/failed
+  if (globalThis._kiteInstrumentsFailed && (now - globalThis._lastKiteInstrumentsFetch < RETRY_TTL)) {
+    return globalThis._kiteInstrumentsCache || [];
   }
 
   try {
     const kite = getKiteInstance();
-    if (!kite || !accessToken) return [];
+    if (!kite || !accessToken) {
+      globalThis._kiteInstrumentsFailed = true;
+      globalThis._lastKiteInstrumentsFetch = now;
+      globalThis._kiteInstrumentsCache = globalThis._kiteInstrumentsCache || [];
+      return globalThis._kiteInstrumentsCache;
+    }
 
     console.log('🔄 Syncing instrument tokens from Zerodha Kite...');
     const instruments = await kite.getInstruments('NSE');
-    instrumentsCache = instruments;
-    lastInstrumentsFetch = now;
-    console.log(`✅ Loaded ${instruments.length} instruments from Zerodha NSE.`);
-    return instrumentsCache;
+    if (instruments && instruments.length > 0) {
+      globalThis._kiteInstrumentsCache = instruments;
+      globalThis._kiteInstrumentsFailed = false;
+      globalThis._lastKiteInstrumentsFetch = now;
+      console.log(`✅ Loaded ${instruments.length} instruments from Zerodha NSE (Cached for 24h).`);
+      return globalThis._kiteInstrumentsCache;
+    }
   } catch (err) {
-    console.warn('⚠️ Could not load Zerodha instruments list:', err.message);
-    return instrumentsCache || [];
+    console.warn('⚠️ Could not load Zerodha instruments list (caching fallback):', err.message);
+    globalThis._kiteInstrumentsFailed = true;
+    globalThis._lastKiteInstrumentsFetch = now;
   }
+  return globalThis._kiteInstrumentsCache || [];
 };
+
 
 /**
  * Dynamic Symbol Normalizer & Zerodha Token Resolver (100% Dynamic - No Hardcoding)

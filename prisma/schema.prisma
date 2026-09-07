@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Existing FutureFunding table (do not modify) ─────────────────────────────
+model users {
+  id         Int       @id @default(autoincrement())
+  name       String    @db.VarChar(255)
+  email      String    @unique @db.VarChar(255)
+  role       String    @default("MEMBER") @db.VarChar(50)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  password   String?   @default("password123") @db.VarChar(255)
+}
+
+// ─── Finvedas Orders (historical archive from Snowflake) ──────────────────────
+model orders {
+  id               String    @id @default(cuid())
+  instrument_token String?
+  order_type       String?
+  status           String?
+  quantity         Float?
+  price            Float?
+  created_at       DateTime?
+
+  @@index([instrument_token])
+  @@index([order_type, status])
+}
+
+// ─── Active Orders (open positions) ───────────────────────────────────────────
+model active_orders {
+  id                 String    @id @default(cuid())
+  instrument_id      String?
+  origin_order_id    String?
+  quantity           Float?
+  remaining_quantity Float?
+  price              Float?
+  order_product_type String?
+  order_type         String?
+  instrument_token   String?
+  created_at         DateTime?
+
+  @@index([instrument_token])
+}
+
+// ─── PnL Snapshots (platform-level fear/greed data) ───────────────────────────
+model pnl_snapshots {
+  id               String    @id @default(cuid())
+  account_id       String?
+  realized_pnl     Float?
+  unrealized_pnl   Float?
+  total_pnl        Float?
+  dd_pct           Float?
+  used_margin      Float?
+  available_margin Float?
+  gross_exposure   Float?
+  created_at       DateTime?
+
+  @@index([account_id])
+}
+

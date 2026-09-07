@@ -1,12 +1,14 @@
 import { runLLMCompletion, parseLLMJson } from '../tools/alerts.js';
 import {
   getOptionsData,
-  getUserSentiment,
   getMarketBreadth,
-  getLatestLTP,
+} from '../tools/snowflake.js';
+import {
+  getUserSentiment,
   getActiveOrders,
   getPnlSnapshot,
-} from '../tools/snowflake.js';
+} from '../tools/finvedasDB.js';
+import { getUnifiedLTP } from '../tools/price.js';
 import { getNSEOptionsPCR, getFIIDIIData, getIndiaVIX } from '../tools/nse.js';
 import { getStockNews } from '../tools/news.js';
 import { getRedditSentiment } from '../tools/reddit.js';
@@ -45,7 +47,7 @@ export const sentimentAgent = async (symbol, abortSignal = null) => {
       getOptionsData(symbol).catch(() => []),
       getUserSentiment(symbol).catch(() => []),
       getMarketBreadth().catch(() => null),
-      getLatestLTP(symbol).catch(() => null),
+      getUnifiedLTP(symbol).catch(() => null),
       getActiveOrders(symbol).catch(() => []),
       getPnlSnapshot().catch(() => null),
       getNSEOptionsPCR(symbol).catch(() => null),
@@ -185,7 +187,7 @@ Respond ONLY with valid JSON. No explanation outside JSON.
     console.log(`✅ Multi-Source Sentiment Agent done for ${symbol}:`,
       sentiment.overall_sentiment,
       sentiment.confidence + '%',
-      `| PCR: ${finalPCR || 'N/A'} (${pcrSource}) | FII/DII: ${fiiDiiData?.smartMoneyBias || 'N/A'} | VIX: ${indiaVix?.vix}`
+      `| PCR: ${finalPCR || 'N/A'} (${pcrSource}) | FII/DII: ${fiiDiiData?.smartMoneyBias || 'N/A'} | VIX: ${indiaVix?.vix} | LTP Source: ${latestLTP?.source || 'N/A'}`
     );
 
     return {

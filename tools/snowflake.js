@@ -1,6 +1,5 @@
 import snowflake from 'snowflake-sdk';
 import dotenv from 'dotenv';
-import { getFromCache, saveToCache } from './localCache.js';
 
 dotenv.config();
 
@@ -88,7 +87,6 @@ export const normalizeSymbol = (rawSymbol) => {
 export const getLatestCandles = async (symbol, timeframe = '1_hour', limit = 50) => {
   const cleanSymbol = normalizeSymbol(symbol);
   let tf = timeframe;
-  // Snowflake DB only has 1m, 5m, 15m, and 1h tables. Map 1_day and 1_week to 1_hour
   if (tf === '1_day' || tf === 'day' || tf === '1_week' || tf === 'week' || tf === 'daily' || tf === 'weekly') {
     tf = '1_hour';
   }
@@ -110,7 +108,6 @@ export const getLatestCandles = async (symbol, timeframe = '1_hour', limit = 50)
   `;
   let rows = await query(sql, [cleanSymbol, limit]);
 
-  // Fallback 1: Try fuzzy search if exact symbol name differs, strictly excluding derivative option/futures contracts
   if (!rows || rows.length === 0) {
     const fuzzySymbol = cleanSymbol.split(' ')[0];
     const fallbackSql = `
@@ -134,7 +131,7 @@ export const getLatestCandles = async (symbol, timeframe = '1_hour', limit = 50)
     rows = await query(fallbackSql, [`%${fuzzySymbol}%`, limit]);
   }
 
-  return rows.reverse(); // oldest first
+  return (rows || []).reverse(); // oldest first
 };
 
 // ─── Get All Instruments ─────────────────────────────────
@@ -153,10 +150,7 @@ export const getInstruments = async () => {
 // ─── Get Latest LTP ──────────────────────────────────────
 export const getLatestLTP = async (symbol) => {
   const cleanSymbol = normalizeSymbol(symbol);
-  const cacheKey = `latest_ltp_${cleanSymbol}`;
-  const cached = getFromCache(cacheKey);
-  if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
-  console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+  console.log(`❄️ Fetching latest LTP for ${cleanSymbol} from Snowflake...`);
 
   const sql = `
     SELECT 
@@ -171,11 +165,9 @@ export const getLatestLTP = async (symbol) => {
   `;
   const rows = await query(sql, [cleanSymbol]);
   if (rows && rows.length > 0) {
-    saveToCache(cacheKey, rows[0]);
     return rows[0];
   }
 
-  // Smart Fallback for LTP: Exclude derivative options & futures so LTP never grabs a ₹7 option contract
   const fuzzySymbol = cleanSymbol.split(' ')[0];
   const fallbackSql = `
     SELECT 
@@ -192,17 +184,12 @@ export const getLatestLTP = async (symbol) => {
     LIMIT 1
   `;
   const fallbackRows = await query(fallbackSql, [`%${fuzzySymbol}%`]);
-  const result = fallbackRows ? fallbackRows[0] : null;
-  if (result) saveToCache(cacheKey, result);
-  return result;
+  return fallbackRows ? fallbackRows[0] : null;
 };
 
 // ─── Get Market Breadth ──────────────────────────────────
 export const getMarketBreadth = async () => {
-  const cacheKey = 'market_breadth';
-  const cached = getFromCache(cacheKey);
-  if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
-  console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+  console.log(`❄️ Fetching Market Breadth from Snowflake...`);
 
   const sql = `
     WITH latest AS (
@@ -228,19 +215,14 @@ export const getMarketBreadth = async () => {
     WHERE prev_close IS NOT NULL
   `;
   const rows = await query(sql);
-  const result = rows[0] || null;
-  if (result) saveToCache(cacheKey, result);
-  return result;
+  return rows[0] || null;
 };
 
-// ─── Get User Sentiment (Full Orders History Scan) ────────
+// ─── Get User Sentiment ───────────────────────────────────
 export const getUserSentiment = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
-    const cacheKey = `user_sentiment_${cleanSymbol}`;
-    const cached = getFromCache(cacheKey);
-    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
-    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+    console.log(`❄️ Fetching User Sentiment for ${cleanSymbol} from Snowflake...`);
 
     const sql = `
       SELECT
@@ -256,22 +238,43 @@ export const getUserSentiment = async (symbol) => {
       ORDER BY ORDER_TYPE, STATUS
     `;
     const rows = await query(sql, [`%${cleanSymbol}%`, cleanSymbol]);
-    saveToCache(cacheKey, rows);
     return rows;
   } catch (error) {
-    console.warn('⚠️  getUserSentiment skipped:', error.message.split('\n')[0]);
+    console.warn('⚠️ getUserSentiment skipped:', error.message.split('\n')[0]);
     return [];
   }
 };
 
-// ─── Get Options Data (Full 111M Row LTP Tick Scan) ─────
+// ─── Get Raw Orders for DB Sync ───────────────────────────
+export const getRawOrders = async (symbol) => {
+  try {
+    const cleanSymbol = normalizeSymbol(symbol);
+    const sql = `
+      SELECT
+        ID,
+        INSTRUMENT_TOKEN,
+        ORDER_TYPE,
+        STATUS,
+        QUANTITY,
+        PRICE,
+        CREATED_AT
+      FROM FINVEDAS_SYNC.RAW.ORDERS
+      WHERE UPPER(INSTRUMENT_TOKEN) LIKE ? OR ? = 'NIFTY 50'
+      LIMIT 200
+    `;
+    const rows = await query(sql, [`%${cleanSymbol}%`, cleanSymbol]);
+    return rows;
+  } catch (error) {
+    console.warn('⚠️ getRawOrders skipped:', error.message.split('\n')[0]);
+    return [];
+  }
+};
+
+// ─── Get Options Data ─────────────────────────────────────
 export const getOptionsData = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
-    const cacheKey = `options_data_${cleanSymbol}`;
-    const cached = getFromCache(cacheKey);
-    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
-    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+    console.log(`❄️ Fetching Options Data for ${cleanSymbol} from Snowflake...`);
 
     const sql = `
       SELECT
@@ -292,22 +295,18 @@ export const getOptionsData = async (symbol) => {
       ORDER BY VOLUME_TRADED_TODAY DESC
     `;
     const rows = await query(sql, [`%${cleanSymbol}%`]);
-    saveToCache(cacheKey, rows);
     return rows;
   } catch (error) {
-    console.warn('⚠️  getOptionsData skipped (table may not exist):', error.message.split('\n')[0]);
+    console.warn('⚠️ getOptionsData skipped:', error.message.split('\n')[0]);
     return [];
   }
 };
 
-// ─── Get Active Orders (Full Open Positions Scan) ─────────
+// ─── Get Active Orders ────────────────────────────────────
 export const getActiveOrders = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
-    const cacheKey = `active_orders_${cleanSymbol}`;
-    const cached = getFromCache(cacheKey);
-    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
-    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+    console.log(`❄️ Fetching Active Orders for ${cleanSymbol} from Snowflake...`);
 
     const sql = `
       SELECT
@@ -328,15 +327,14 @@ export const getActiveOrders = async (symbol) => {
       ORDER BY ao.CREATED_AT DESC
     `;
     const rows = await query(sql, [`%${cleanSymbol}%`]);
-    saveToCache(cacheKey, rows);
     return rows;
   } catch (error) {
-    console.warn('⚠️  getActiveOrders skipped:', error.message.split('\n')[0]);
+    console.warn('⚠️ getActiveOrders skipped:', error.message.split('\n')[0]);
     return [];
   }
 };
 
-// ─── Deep Historical Candle Stats (10M+ Rows Analysis Across 1m, 5m, 15m, 1h) ──
+// ─── Deep Historical Candle Stats ─────────────────────────
 export const getHistoricalCandleStats = async (symbol) => {
   try {
     const cleanSymbol = normalizeSymbol(symbol);
@@ -371,18 +369,15 @@ export const getHistoricalCandleStats = async (symbol) => {
       newest_record_date: r.NEWEST_RECORD_DATE,
     };
   } catch (error) {
-    console.warn('⚠️  getHistoricalCandleStats skipped:', error.message.split('\n')[0]);
+    console.warn('⚠️ getHistoricalCandleStats skipped:', error.message.split('\n')[0]);
     return null;
   }
 };
 
-// ─── Get PnL Snapshot (Platform Fear/Greed Full Scan) ──────
+// ─── Get PnL Snapshot ─────────────────────────────────────
 export const getPnlSnapshot = async () => {
   try {
-    const cacheKey = 'pnl_snapshot';
-    const cached = getFromCache(cacheKey);
-    if (cached) { console.log(`📦 Cache hit: ${cacheKey}`); return cached; }
-    console.log(`❄️  Cache miss: fetching ${cacheKey} from Snowflake...`);
+    console.log(`❄️ Fetching PnL Snapshot from Snowflake...`);
 
     const sql = `
       SELECT
@@ -398,17 +393,38 @@ export const getPnlSnapshot = async () => {
       FROM FINVEDAS_SYNC.RAW.PNL_SNAPSHOTS
     `;
     const rows = await query(sql);
-    const result = rows[0] || null;
-    if (result) saveToCache(cacheKey, result);
-    return result;
+    return rows[0] || null;
   } catch (error) {
-    console.warn('⚠️  getPnlSnapshot skipped:', error.message.split('\n')[0]);
+    console.warn('⚠️ getPnlSnapshot skipped:', error.message.split('\n')[0]);
     return null;
   }
 };
 
+// ─── Get Raw PnL Rows for Sync ────────────────────────────
+export const getRawPnlRows = async () => {
+  try {
+    const sql = `
+      SELECT
+        ACCOUNT_ID,
+        REALIZED_PNL,
+        UNREALIZED_PNL,
+        TOTAL_PNL,
+        DD_PCT,
+        USED_MARGIN,
+        AVAILABLE_MARGIN,
+        GROSS_EXPOSURE,
+        CREATED_AT
+      FROM FINVEDAS_SYNC.RAW.PNL_SNAPSHOTS
+      LIMIT 100
+    `;
+    return await query(sql);
+  } catch (error) {
+    console.warn('⚠️ getRawPnlRows skipped:', error.message.split('\n')[0]);
+    return [];
+  }
+};
+
 // ─── Get Multi-Timeframe Candles ─────────────────────────
-// Returns candles for 1min, 5min, 15min alongside 1hour
 export const getMultiTimeframeCandles = async (symbol, limit = 20) => {
   try {
     const timeframes = ['1_minute', '5_minute', '15_minute'];
@@ -423,7 +439,7 @@ export const getMultiTimeframeCandles = async (symbol, limit = 20) => {
       '15_minute': results[2],
     };
   } catch (error) {
-    console.warn('⚠️  getMultiTimeframeCandles skipped:', error.message.split('\n')[0]);
+    console.warn('⚠️ getMultiTimeframeCandles skipped:', error.message.split('\n')[0]);
     return {};
   }
 };
@@ -450,7 +466,7 @@ export const getAvailableInstruments = async () => {
     const merged = Array.from(new Set([...defaults, ...cleaned]));
     return merged.slice(0, 12);
   } catch (error) {
-    console.warn('⚠️  getAvailableInstruments skipped:', error.message.split('\n')[0]);
+    console.warn('⚠️ getAvailableInstruments skipped:', error.message.split('\n')[0]);
     return ['NIFTY 50', 'BANKNIFTY', 'SENSEX', '360ONE', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'MARUTI', 'ONGC'];
   }
 };

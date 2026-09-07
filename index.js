@@ -84,9 +84,13 @@ app.post('/analyze', async (req, res) => {
 
     if (signal.aborted) throw new Error('Analysis aborted by user.');
 
-    // Step 1: Run Market Analyst first to fetch live candles (Zerodha / Yahoo Finance)
-    console.log('📊 Running agents...');
-    const marketAnalysis = await marketAnalyst(symbol, timeframe, lookbackDays, screenLivePrice, signal);
+    // Step 1: Run ALL 3 Sub-Agents concurrently in parallel for maximum speed ⚡
+    console.log('⚡ Running Market, Sentiment, and Pattern Agents in PARALLEL...');
+    const [marketAnalysis, sentiment, patterns] = await Promise.all([
+      marketAnalyst(symbol, timeframe, lookbackDays, screenLivePrice, signal),
+      sentimentAgent(symbol, signal),
+      patternAgent(symbol, timeframe, null, signal),
+    ]);
 
     if (signal.aborted) throw new Error('Analysis aborted by user.');
 
@@ -101,12 +105,6 @@ app.post('/analyze', async (req, res) => {
         message: `Hey! Data for '${symbol}' could not be retrieved. Please search for a valid instrument (e.g., NIFTY 50, PC JEWELLER, LT FOODS, RELIANCE, TCS).`,
       });
     }
-
-    // Run Sentiment & Pattern agents using live candles
-    const [sentiment, patterns] = await Promise.all([
-      sentimentAgent(symbol, signal),
-      patternAgent(symbol, timeframe, marketAnalysis?.candles, signal),
-    ]);
 
     if (signal.aborted) throw new Error('Analysis aborted by user.');
 
