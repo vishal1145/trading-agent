@@ -133,6 +133,24 @@ VOLUME TODAY: ${latestLTP?.VOLUME_TRADED_TODAY || 'N/A'}
 - Put Volume: ${sfPutVol || nseOptions?.totalPutVolume || 0}
 - Open Interest PCR: ${nseOptions?.pcrOI || 'N/A'}
 - PCR Signal: ${nseOptions?.pcrSignal || (finalPCR > 1 ? 'BULLISH' : 'BEARISH')}
+- Call Wall: ₹${nseOptions?.callWall || 'N/A'} (Max Call OI — resistance ceiling)
+- Put Wall: ₹${nseOptions?.putWall || 'N/A'} (Max Put OI — support floor)
+- Max Pain: ₹${nseOptions?.maxPain || 'N/A'}
+${nseOptions?.deltaOI ? `
+1b. ΔOI (CHANGE IN OPEN INTEREST — What's happening RIGHT NOW):
+- Total Call ΔOI: ${nseOptions.deltaOI.totalCallDelta > 0 ? '+' : ''}${nseOptions.deltaOI.totalCallDelta?.toLocaleString() || '0'}
+- Total Put ΔOI: ${nseOptions.deltaOI.totalPutDelta > 0 ? '+' : ''}${nseOptions.deltaOI.totalPutDelta?.toLocaleString() || '0'}
+- ΔOI Signal: ${nseOptions.deltaOI.signal} — ${nseOptions.deltaOI.description}
+- Top OI Buildup Strikes: ${nseOptions.deltaOI.topBuildups?.slice(0, 3).map(b => `₹${b.strike} (Call Δ: ${b.call_delta > 0 ? '+' : ''}${b.call_delta}, Put Δ: ${b.put_delta > 0 ? '+' : ''}${b.put_delta} → ${b.activity})`).join(', ') || 'N/A'}
+- Fastest Call Writing at: ₹${nseOptions.deltaOI.fastestCallWriting?.strike || 'N/A'} (+${nseOptions.deltaOI.fastestCallWriting?.delta?.toLocaleString() || 0} OI)
+- Fastest Put Writing at: ₹${nseOptions.deltaOI.fastestPutWriting?.strike || 'N/A'} (+${nseOptions.deltaOI.fastestPutWriting?.delta?.toLocaleString() || 0} OI)
+` : ''}
+${nseOptions?.zonePCR ? `
+1c. ZONE PCR (OI Distribution Above vs Below Spot):
+- Ceiling PCR (above spot): ${nseOptions.zonePCR.ceilingPCR ?? 'N/A'} — ${nseOptions.zonePCR.ceilingPCR < 0.5 ? 'Heavy call writing above = strong resistance' : 'Moderate ceiling pressure'}
+- Floor PCR (below spot): ${nseOptions.zonePCR.floorPCR ?? 'N/A'} — ${nseOptions.zonePCR.floorPCR > 1.5 ? 'Heavy put writing below = strong support' : 'Moderate floor support'}
+- Zone Signal: ${nseOptions.zonePCR.signal}
+` : ''}
 
 2. INSTITUTIONAL SMART MONEY (FII / DII Net Flow):
 - Summary: ${fiiDiiData?.summary || 'N/A'}
@@ -218,6 +236,14 @@ Respond ONLY with valid JSON. No explanation outside JSON.
       market_breadth: marketBreadth,
       pnl_snapshot: pnlSnapshot,
       sentiment,
+      // Phase 3: F&O Institutional Defense Walls
+      nse_options: nseOptions,
+      call_wall: nseOptions?.callWall || null,
+      put_wall: nseOptions?.putWall || null,
+      max_pain: nseOptions?.maxPain || null,
+      // ΔOI (Change in Open Interest)
+      delta_oi: nseOptions?.deltaOI || null,
+      zone_pcr: nseOptions?.zonePCR || null,
     };
 
   } catch (error) {

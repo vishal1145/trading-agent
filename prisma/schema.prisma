@@ -63,3 +63,26 @@ model pnl_snapshots {
   @@index([account_id])
 }
 
+// ─── Champion Traders (On-demand cached playbooks from Snowflake) ─────────────
+model champion_traders {
+  id                     String    @id @default(cuid())
+  symbol                 String    @unique
+  is_instrument_specific Boolean   @default(false)
+  trader_name            String?
+  favourite_instrument   String?
+  total_trades           Int?
+  total_pnl              Float?
+  win_rate_pct           Float?
+  avg_hold_mins          Float?
+  avg_win_pnl            Float?
+  avg_loss_pnl           Float?
+  risk_reward_ratio      Float?
+  preferred_product_type String?
+  best_entry_hour_ist    Int?
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  @@index([symbol])
+}
+
+

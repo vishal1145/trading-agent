@@ -6,7 +6,16 @@ import { sentimentAgent } from './agents/sentimentAgent.js';
 import { patternAgent } from './agents/patternAgent.js';
 import { supervisor } from './agents/supervisor.js';
 
-import { getAvailableInstruments, normalizeSymbol } from './tools/snowflake.js';
+import { 
+  getAvailableInstruments, 
+  normalizeSymbol,
+  getTopTraders, 
+  getUserInstrumentPreference, 
+  getTradeDurationPatterns, 
+  getTradingHourPatterns,
+  getUserTradingProfiles
+} from './tools/snowflake.js';
+import { getInstrumentChampionTrader } from './tools/finvedasDB.js';
 
 dotenv.config();
 
@@ -37,6 +46,41 @@ app.get('/instruments', async (req, res) => {
     res.json({ success: false, instruments: ['NIFTY 50', 'BANKNIFTY', 'RELIANCE', 'TCS', 'INFY'] });
   }
 });
+
+// ─── User Behaviour Endpoint ─────────────────────────────
+app.get('/user-behaviour', async (req, res) => {
+  try {
+    const [topTraders, instruments, durations, hours, profiles] = await Promise.all([
+      getTopTraders(),
+      getUserInstrumentPreference(),
+      getTradeDurationPatterns(),
+      getTradingHourPatterns(),
+      getUserTradingProfiles(),
+    ]);
+    res.json({
+      success: true,
+      top_traders: topTraders,
+      instrument_preference: instruments,
+      duration_patterns: durations,
+      hour_patterns: hours,
+      user_profiles: profiles,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── Champion Trader Playbook Endpoint ───────────────────
+app.get('/champion/:symbol', async (req, res) => {
+  try {
+    const symbol = decodeURIComponent(req.params.symbol);
+    const champion = await getInstrumentChampionTrader(symbol);
+    res.json({ success: true, symbol, champion });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // ─── Active Job Registry for Backend Cancellation ────────
 const activeJobs = new Map();

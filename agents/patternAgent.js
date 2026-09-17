@@ -1,6 +1,5 @@
 import { runLLMCompletion, parseLLMJson } from '../tools/alerts.js';
-import { getLatestCandles } from '../tools/snowflake.js';
-import { getYahooHistoricalCandles } from '../tools/yahoo.js';
+import { getSynchronizedCandles } from '../tools/candleSync.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -320,14 +319,14 @@ export const patternAgent = async (symbol, timeframe = '1_hour', inputCandles = 
     if (abortSignal?.aborted) throw new Error('Analysis aborted by user.');
     console.log(`🔍 Pattern Agent scanning ALL candles for ${symbol} on ${timeframe}...`);
 
-    // Step 1: Use provided live candles or fetch from Yahoo / Snowflake
+    // Step 1: Use provided live candles or fetch synchronized candles
     let candles = inputCandles;
+    let syncResult = null;
+
     if (!candles || candles.length < 5) {
-      const yahooRes = await getYahooHistoricalCandles(symbol, timeframe, 30).catch(() => null);
-      if (yahooRes && yahooRes.candles && yahooRes.candles.length >= 5) {
-        candles = yahooRes.candles;
-      } else {
-        candles = await getLatestCandles(symbol, timeframe, 50).catch(() => []);
+      syncResult = await getSynchronizedCandles(symbol, timeframe, 30).catch(() => null);
+      if (syncResult && syncResult.primaryCandles && syncResult.primaryCandles.length >= 5) {
+        candles = syncResult.primaryCandles;
       }
     }
 
@@ -339,11 +338,17 @@ export const patternAgent = async (symbol, timeframe = '1_hour', inputCandles = 
     const scanResult = detectPatterns(candles);
     const { allPatterns, latestPatterns, highConfPatterns, patternCounts, totalCandlesScanned } = scanResult;
 
-    // Step 3: Multi-timeframe confirmation (fetch a secondary timeframe)
+    // Step 3: Multi-timeframe confirmation (use context timeframe from synchronized candles)
     let mtfConfirmation = null;
     const secondaryTF = timeframe.includes('1_m') ? '5_minute' : timeframe.includes('5_m') ? '15_minute' : '1_hour';
     try {
-      const mtfCandles = await getLatestCandles(symbol, secondaryTF, 50).catch(() => []);
+      let mtfCandles = syncResult?.contextCandles?.[secondaryTF] || null;
+      if (!mtfCandles || mtfCandles.length < 10) {
+        // If secondary not in sync result, check first available context candle list
+        const firstAvail = Object.values(syncResult?.contextCandles || {})[0];
+        if (firstAvail && firstAvail.length >= 10) mtfCandles = firstAvail;
+      }
+
       if (mtfCandles && mtfCandles.length >= 10) {
         const mtfScan = detectPatterns(mtfCandles);
         const mtfBullish = mtfScan.bullishCount;

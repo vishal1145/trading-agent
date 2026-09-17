@@ -31,6 +31,12 @@ export const connectSnowflake = () => {
   });
 };
 
+// ─── Get Connection ──────────────────────────────────────
+export const getConnection = async () => {
+  return connection;
+};
+
+
 // ─── Execute Query ───────────────────────────────────────
 export const query = (sql, binds = []) => {
   return new Promise((resolve, reject) => {
@@ -65,7 +71,7 @@ export const normalizeSymbol = (rawSymbol) => {
 
   // Major Stock & Banking Aliases
   if (s === 'HDFC' || s === 'HDFC BANK' || s === 'HDFCBANK') return 'HDFCBANK';
-  if (s === 'SBI' || s === 'STATE BANK OF INDIA' || s === 'STATE BANK' || s === 'SBIN') return 'SBIN';
+  if (s === 'SBI' || s === 'STATE BANK OF INDIA' || s === 'STATE BANK' || s === 'STATE BANK OF' || s === 'SBIN') return 'SBIN';
   if (s === 'ICICI' || s === 'ICICI BANK' || s === 'ICICIBANK') return 'ICICIBANK';
   if (s === 'AXIS' || s === 'AXIS BANK' || s === 'AXISBANK') return 'AXISBANK';
   if (s === 'KOTAK' || s === 'KOTAK BANK' || s === 'KOTAK MAHINDRA' || s === 'KOTAKBANK') return 'KOTAKBANK';
@@ -468,6 +474,292 @@ export const getAvailableInstruments = async () => {
   } catch (error) {
     console.warn('⚠️ getAvailableInstruments skipped:', error.message.split('\n')[0]);
     return ['NIFTY 50', 'BANKNIFTY', 'SENSEX', '360ONE', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'MARUTI', 'ONGC'];
+  }
+};
+
+// ─── User Behaviour: Top Profitable Users ────────────────
+export const getTopTraders = async () => {
+  const conn = await getConnection();
+  return new Promise((resolve, reject) => {
+    conn.execute({
+      sqlText: `
+        SELECT 
+          u.FULL_NAME,
+          u.EMAIL,
+          COUNT(t.ID)                    AS TOTAL_TRADES,
+          SUM(t.REALISED_PNL)            AS TOTAL_PNL,
+          AVG(t.REALISED_PNL)            AS AVG_PNL_PER_TRADE,
+          SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) AS WINNING_TRADES,
+          SUM(CASE WHEN t.REALISED_PNL < 0 THEN 1 ELSE 0 END) AS LOSING_TRADES,
+          ROUND(SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(t.ID), 2) AS WIN_RATE_PCT,
+          AVG(t.TRADE_DURATION / 60)     AS AVG_DURATION_MINS,
+          SUM(t.TOTAL_CHARGES)           AS TOTAL_CHARGES
+        FROM FINVEDAS_SYNC.RAW.USERS u
+        JOIN FINVEDAS_SYNC.RAW.TRADES t ON t.USER_ID = u.ID
+        WHERE t.STATUS = 'CLOSED'
+        GROUP BY u.ID, u.FULL_NAME, u.EMAIL
+        ORDER BY TOTAL_PNL DESC
+      `,
+      complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+    });
+  });
+};
+
+// ─── User Behaviour: Instrument Preference per User ──────
+export const getUserInstrumentPreference = async () => {
+  const conn = await getConnection();
+  return new Promise((resolve, reject) => {
+    conn.execute({
+      sqlText: `
+        SELECT 
+          u.FULL_NAME,
+          t.INSTRUMENT_SYMBOL,
+          COUNT(*)                  AS TRADES,
+          SUM(t.REALISED_PNL)       AS PNL,
+          AVG(t.REALISED_PNL)       AS AVG_PNL,
+          AVG(t.TRADE_DURATION/60)  AS AVG_DURATION_MINS,
+          t.ORDER_PRODUCT_TYPE
+        FROM FINVEDAS_SYNC.RAW.TRADES t
+        JOIN FINVEDAS_SYNC.RAW.USERS u ON u.ID = t.USER_ID
+        WHERE t.STATUS = 'CLOSED'
+        GROUP BY u.FULL_NAME, t.INSTRUMENT_SYMBOL, t.ORDER_PRODUCT_TYPE
+        ORDER BY PNL DESC
+      `,
+      complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+    });
+  });
+};
+
+// ─── User Behaviour: Trade Duration Patterns ─────────────
+export const getTradeDurationPatterns = async () => {
+  const conn = await getConnection();
+  return new Promise((resolve, reject) => {
+    conn.execute({
+      sqlText: `
+        SELECT
+          u.FULL_NAME,
+          CASE 
+            WHEN t.TRADE_DURATION < 60   THEN 'under_1_min'
+            WHEN t.TRADE_DURATION < 300  THEN '1_to_5_mins'
+            WHEN t.TRADE_DURATION < 900  THEN '5_to_15_mins'
+            WHEN t.TRADE_DURATION < 3600 THEN '15_to_60_mins'
+            ELSE 'over_1_hour'
+          END AS HOLD_DURATION,
+          COUNT(*)              AS TRADES,
+          SUM(t.REALISED_PNL)   AS TOTAL_PNL,
+          AVG(t.REALISED_PNL)   AS AVG_PNL,
+          ROUND(SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS WIN_RATE
+        FROM FINVEDAS_SYNC.RAW.TRADES t
+        JOIN FINVEDAS_SYNC.RAW.USERS u ON u.ID = t.USER_ID
+        WHERE t.STATUS = 'CLOSED'
+        GROUP BY u.FULL_NAME, HOLD_DURATION
+        ORDER BY TOTAL_PNL DESC
+      `,
+      complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+    });
+  });
+};
+
+// ─── User Behaviour: Best Trading Hours (IST) ────────────
+export const getTradingHourPatterns = async () => {
+  const conn = await getConnection();
+  return new Promise((resolve, reject) => {
+    conn.execute({
+      sqlText: `
+        SELECT 
+          u.FULL_NAME,
+          HOUR(CONVERT_TIMEZONE('Asia/Kolkata', t.ENTRY_TIME)) AS HOUR_IST,
+          COUNT(*)              AS TRADES,
+          SUM(t.REALISED_PNL)   AS PNL,
+          ROUND(SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS WIN_RATE
+        FROM FINVEDAS_SYNC.RAW.TRADES t
+        JOIN FINVEDAS_SYNC.RAW.USERS u ON u.ID = t.USER_ID
+        WHERE t.STATUS = 'CLOSED'
+        GROUP BY u.FULL_NAME, HOUR_IST
+        ORDER BY PNL DESC
+      `,
+      complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+    });
+  });
+};
+
+// ─── User Behaviour: Comprehensive User Trading Profiles ─
+export const getUserTradingProfiles = async () => {
+  const conn = await getConnection();
+  return new Promise((resolve, reject) => {
+    conn.execute({
+      sqlText: `
+        SELECT 
+          u.ID                                                           AS USER_ID,
+          u.FULL_NAME,
+          u.EMAIL,
+          a.ACCOUNT_NO,
+          a.ACCOUNT_SIZE,
+          a.CURRENT_BALANCE,
+          a.REALISED_PNL                                                 AS ACCOUNT_PNL,
+          ROUND(a.REALISED_PNL * 100.0 / NULLIF(a.ACCOUNT_SIZE, 0), 2) AS PNL_PCT,
+          a.STATUS                                                       AS ACCOUNT_STATUS,
+
+          -- Trade summary
+          COUNT(t.ID)                                                    AS TOTAL_TRADES,
+          SUM(t.REALISED_PNL)                                            AS TOTAL_TRADE_PNL,
+          AVG(t.REALISED_PNL)                                            AS AVG_PNL_PER_TRADE,
+          MAX(t.REALISED_PNL)                                            AS BEST_TRADE,
+          MIN(t.REALISED_PNL)                                            AS WORST_TRADE,
+          SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END)           AS WINNING_TRADES,
+          SUM(CASE WHEN t.REALISED_PNL < 0 THEN 1 ELSE 0 END)           AS LOSING_TRADES,
+          ROUND(
+            SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) * 100.0
+            / NULLIF(COUNT(t.ID), 0), 2
+          )                                                              AS WIN_RATE_PCT,
+
+          -- How they trade
+          AVG(t.TRADE_DURATION / 60)                                     AS AVG_HOLD_MINS,
+          MODE(t.INSTRUMENT_SYMBOL)                                      AS FAVOURITE_INSTRUMENT,
+          MODE(t.ORDER_PRODUCT_TYPE)                                      AS PREFERRED_PRODUCT_TYPE,
+          SUM(t.TOTAL_CHARGES)                                           AS TOTAL_CHARGES_PAID,
+          SUM(t.REALISED_PNL) - SUM(t.TOTAL_CHARGES)                    AS NET_PNL_AFTER_CHARGES,
+
+          -- Order behaviour
+          COUNT(o.ID)                                                    AS TOTAL_ORDERS,
+          SUM(CASE WHEN o.STATUS = 'EXECUTED' THEN 1 ELSE 0 END)        AS EXECUTED_ORDERS,
+          SUM(CASE WHEN o.STATUS = 'CANCELLED' THEN 1 ELSE 0 END)       AS CANCELLED_ORDERS
+
+        FROM FINVEDAS_SYNC.RAW.USERS u
+        JOIN FINVEDAS_SYNC.RAW.ACCOUNTS a    ON a.USER_ID = u.ID
+        LEFT JOIN FINVEDAS_SYNC.RAW.TRADES t ON t.USER_ID = u.ID AND t.STATUS = 'CLOSED'
+        LEFT JOIN FINVEDAS_SYNC.RAW.ORDERS o ON o.USER_ID = u.ID
+        WHERE u.DELETED_AT IS NULL
+          AND a.DELETED_AT IS NULL
+        GROUP BY u.ID, u.FULL_NAME, u.EMAIL, a.ACCOUNT_NO, a.ACCOUNT_SIZE, 
+                 a.CURRENT_BALANCE, a.REALISED_PNL, a.STATUS
+        ORDER BY TOTAL_TRADE_PNL DESC NULLS LAST
+      `,
+      complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+    });
+  });
+};
+
+// ─── Champion Trader Reverse-Engineering: Instrument & Platform Playbook ──
+export const getInstrumentChampionTrader = async (symbol) => {
+  try {
+    const cleanSymbol = normalizeSymbol(symbol);
+    const shortSymbol = cleanSymbol.split(' ')[0];
+    const conn = await getConnection();
+
+    // 1. Try to find the #1 most profitable trader for this specific instrument
+    const instrumentSql = `
+      SELECT 
+        u.FULL_NAME,
+        COUNT(t.ID)                                         AS TOTAL_TRADES,
+        SUM(t.REALISED_PNL)                                 AS TOTAL_PNL,
+        AVG(t.TRADE_DURATION / 60)                          AS AVG_HOLD_MINS,
+        ROUND(SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(t.ID), 0), 2) AS WIN_RATE_PCT,
+        AVG(CASE WHEN t.REALISED_PNL > 0 THEN t.REALISED_PNL END) AS AVG_WIN_PNL,
+        AVG(CASE WHEN t.REALISED_PNL < 0 THEN ABS(t.REALISED_PNL) END) AS AVG_LOSS_PNL,
+        MODE(t.ORDER_PRODUCT_TYPE)                          AS PREFERRED_PRODUCT_TYPE,
+        MODE(HOUR(CONVERT_TIMEZONE('Asia/Kolkata', t.ENTRY_TIME))) AS BEST_ENTRY_HOUR_IST,
+        SUM(t.TOTAL_CHARGES)                                AS TOTAL_CHARGES
+      FROM FINVEDAS_SYNC.RAW.TRADES t
+      JOIN FINVEDAS_SYNC.RAW.USERS u ON u.ID = t.USER_ID
+      WHERE t.STATUS = 'CLOSED'
+        AND (
+          UPPER(t.INSTRUMENT_SYMBOL) LIKE ?
+          OR UPPER(t.INSTRUMENT_SYMBOL) LIKE ?
+          OR ? = 'NIFTY 50'
+        )
+      GROUP BY u.ID, u.FULL_NAME
+      HAVING SUM(t.REALISED_PNL) > 0 AND COUNT(t.ID) >= 3
+      ORDER BY TOTAL_PNL DESC
+      LIMIT 1
+    `;
+
+    const specificRows = await new Promise((resolve, reject) => {
+      conn.execute({
+        sqlText: instrumentSql,
+        binds: [`%${cleanSymbol}%`, `%${shortSymbol}%`, cleanSymbol],
+        complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+      });
+    });
+
+    if (specificRows && specificRows.length > 0) {
+      const row = specificRows[0];
+      const avgWin = Number(row.AVG_WIN_PNL || 0);
+      const avgLoss = Number(row.AVG_LOSS_PNL || 0);
+      const rrRatio = (avgLoss > 0 && avgWin > 0) ? Number((avgWin / avgLoss).toFixed(2)) : 1.5;
+
+      return {
+        is_instrument_specific: true,
+        symbol: cleanSymbol,
+        trader_name: row.FULL_NAME,
+        total_trades: Number(row.TOTAL_TRADES || 0),
+        total_pnl: Number(row.TOTAL_PNL || 0),
+        win_rate_pct: Number(row.WIN_RATE_PCT || 0),
+        avg_hold_mins: row.AVG_HOLD_MINS ? Number(Number(row.AVG_HOLD_MINS).toFixed(1)) : 30,
+        avg_win_pnl: avgWin ? Number(avgWin.toFixed(2)) : null,
+        avg_loss_pnl: avgLoss ? Number(avgLoss.toFixed(2)) : null,
+        risk_reward_ratio: rrRatio,
+        preferred_product_type: row.PREFERRED_PRODUCT_TYPE || 'MIS',
+        best_entry_hour_ist: row.BEST_ENTRY_HOUR_IST !== null ? Number(row.BEST_ENTRY_HOUR_IST) : 10,
+      };
+    }
+
+    // 2. Fallback: Find Platform-Wide Champion Trader across all instruments
+    const platformSql = `
+      SELECT 
+        u.FULL_NAME,
+        COUNT(t.ID)                                         AS TOTAL_TRADES,
+        SUM(t.REALISED_PNL)                                 AS TOTAL_PNL,
+        AVG(t.TRADE_DURATION / 60)                          AS AVG_HOLD_MINS,
+        ROUND(SUM(CASE WHEN t.REALISED_PNL > 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(t.ID), 0), 2) AS WIN_RATE_PCT,
+        AVG(CASE WHEN t.REALISED_PNL > 0 THEN t.REALISED_PNL END) AS AVG_WIN_PNL,
+        AVG(CASE WHEN t.REALISED_PNL < 0 THEN ABS(t.REALISED_PNL) END) AS AVG_LOSS_PNL,
+        MODE(t.INSTRUMENT_SYMBOL)                           AS FAVOURITE_INSTRUMENT,
+        MODE(t.ORDER_PRODUCT_TYPE)                          AS PREFERRED_PRODUCT_TYPE,
+        MODE(HOUR(CONVERT_TIMEZONE('Asia/Kolkata', t.ENTRY_TIME))) AS BEST_ENTRY_HOUR_IST
+      FROM FINVEDAS_SYNC.RAW.TRADES t
+      JOIN FINVEDAS_SYNC.RAW.USERS u ON u.ID = t.USER_ID
+      WHERE t.STATUS = 'CLOSED'
+      GROUP BY u.ID, u.FULL_NAME
+      HAVING SUM(t.REALISED_PNL) > 0 AND COUNT(t.ID) >= 5
+      ORDER BY TOTAL_PNL DESC
+      LIMIT 1
+    `;
+
+    const platformRows = await new Promise((resolve, reject) => {
+      conn.execute({
+        sqlText: platformSql,
+        complete: (err, stmt, rows) => err ? reject(err) : resolve(rows),
+      });
+    });
+
+    if (platformRows && platformRows.length > 0) {
+      const row = platformRows[0];
+      const avgWin = Number(row.AVG_WIN_PNL || 0);
+      const avgLoss = Number(row.AVG_LOSS_PNL || 0);
+      const rrRatio = (avgLoss > 0 && avgWin > 0) ? Number((avgWin / avgLoss).toFixed(2)) : 1.5;
+
+      return {
+        is_instrument_specific: false,
+        symbol: cleanSymbol,
+        trader_name: row.FULL_NAME,
+        favourite_instrument: row.FAVOURITE_INSTRUMENT || 'NIFTY 50',
+        total_trades: Number(row.TOTAL_TRADES || 0),
+        total_pnl: Number(row.TOTAL_PNL || 0),
+        win_rate_pct: Number(row.WIN_RATE_PCT || 0),
+        avg_hold_mins: row.AVG_HOLD_MINS ? Number(Number(row.AVG_HOLD_MINS).toFixed(1)) : 30,
+        avg_win_pnl: avgWin ? Number(avgWin.toFixed(2)) : null,
+        avg_loss_pnl: avgLoss ? Number(avgLoss.toFixed(2)) : null,
+        risk_reward_ratio: rrRatio,
+        preferred_product_type: row.PREFERRED_PRODUCT_TYPE || 'MIS',
+        best_entry_hour_ist: row.BEST_ENTRY_HOUR_IST !== null ? Number(row.BEST_ENTRY_HOUR_IST) : 10,
+      };
+    }
+
+    return null;
+  } catch (err) {
+    console.warn(`⚠️ getInstrumentChampionTrader skipped for ${symbol}:`, err.message.split('\n')[0]);
+    return null;
   }
 };
 

@@ -2,8 +2,8 @@
  * Finvedas Trading Agent - Extension Popup Controller
  */
 
-let API_BASE_URL = 'https://api.tradingagent.chandankumal.in';
-// const FALLBACK_API_URL = 'http://localhost:3000';
+// let API_BASE_URL = 'https://api.tradingagent.chandankumal.in';
+const FALLBACK_API_URL = 'http://localhost:3000';
 
 let selectedTimeframe = '1_hour';
 let selectedLookbackDays = 30;
@@ -405,16 +405,94 @@ function renderResults(data) {
   confidenceVal.innerText = conf;
   summaryText.innerText = summary;
 
+  // ── Market Regime & Time Advisory ──────────────────────────────────
+  const regime = signal.market_regime || agents.market?.market_regime || agents.market?.indicators?.['1_hour']?.market_regime || null;
+  const timeFilter = signal.time_filter || regime?.time_of_day || null;
+
+  const regimeBadge = document.getElementById('regimeBadge');
+  const regimeBanner = document.getElementById('regimeBanner');
+  const regimeTag = document.getElementById('regimeTag');
+  const adxTag = document.getElementById('adxTag');
+  const regimeAdvisory = document.getElementById('regimeAdvisory');
+
+  if (regime) {
+    if (regimeBadge) {
+      regimeBadge.classList.remove('hidden');
+      const prim = (regime.primary_regime || 'TRANSITIONAL').toUpperCase();
+      regimeBadge.innerText = prim === 'BREAKOUT_IMMINENT' ? 'BREAKOUT ALERT' : prim;
+      regimeBadge.className = `regime-badge ${regime.primary_regime.toLowerCase()}`;
+    }
+
+    if (regimeBanner) {
+      regimeBanner.classList.remove('hidden');
+      if (regimeTag) {
+        regimeTag.innerText = `🧭 ${regime.primary_regime} (${regime.trend_direction})`;
+      }
+      if (adxTag && regime.adx) {
+        adxTag.innerText = `ADX: ${regime.adx.value} (${regime.adx.slope})`;
+      }
+
+      if (regimeAdvisory) {
+        let adv = regime.guidance || '';
+        if (timeFilter) {
+          const isWarning = timeFilter.block_signals;
+          adv += ` • ${timeFilter.label}: ${timeFilter.action}`;
+          if (isWarning) {
+            regimeAdvisory.className = 'regime-advisory time-warning';
+          } else {
+            regimeAdvisory.className = 'regime-advisory';
+          }
+        }
+        regimeAdvisory.innerText = adv;
+      }
+    }
+  } else {
+    if (regimeBadge) regimeBadge.classList.add('hidden');
+    if (regimeBanner) regimeBanner.classList.add('hidden');
+  }
+
   // Extract Prices cleanly
+  const isHold = rec.includes('HOLD') || rec.includes('NEUTRAL') || rec.includes('WAIT');
   const livePrice = data.current_price || agents.market?.currentPrice || agents.market?.indicators?.['1_hour']?.current_price;
-  const rawEntry = signal.entry_price || livePrice;
+  const rawEntry = signal.entry_price || (isHold ? null : livePrice);
   const rawTarget = signal.target_price || signal.target || signal.actionable_plan?.target_price;
   const rawStop = signal.stop_loss || signal.stop || signal.actionable_plan?.stop_loss;
 
   if (livePriceVal) livePriceVal.innerText = formatPrice(livePrice);
-  if (entryVal) entryVal.innerText = formatPrice(rawEntry);
-  if (targetVal) targetVal.innerText = formatPrice(rawTarget);
-  if (stopLossVal) stopLossVal.innerText = formatPrice(rawStop);
+
+  if (isHold) {
+    if (entryVal) {
+      entryVal.innerText = '—';
+      entryVal.classList.add('hold-val');
+      entryVal.title = 'No active entry for HOLD signal';
+    }
+    if (targetVal) {
+      targetVal.innerText = '—';
+      targetVal.classList.add('hold-val');
+      targetVal.title = 'No active target for HOLD signal';
+    }
+    if (stopLossVal) {
+      stopLossVal.innerText = '—';
+      stopLossVal.classList.add('hold-val');
+      stopLossVal.title = 'No stop loss needed while on sidelines';
+    }
+  } else {
+    if (entryVal) {
+      entryVal.classList.remove('hold-val');
+      entryVal.innerText = formatPrice(rawEntry);
+      entryVal.title = '';
+    }
+    if (targetVal) {
+      targetVal.classList.remove('hold-val');
+      targetVal.innerText = formatPrice(rawTarget);
+      targetVal.title = '';
+    }
+    if (stopLossVal) {
+      stopLossVal.classList.remove('hold-val');
+      stopLossVal.innerText = formatPrice(rawStop);
+      stopLossVal.title = '';
+    }
+  }
 
   // Sub-Agent Details
   applyAgentTag(marketTag, agents.market?.overallSignal || agents.market?.analysis?.bias || 'NEUTRAL');
@@ -442,47 +520,108 @@ function renderResults(data) {
   const profitAbsVal = document.getElementById('profitAbsVal');
   const profitPct = signal.profit_potential_pct;
   const profitAbs = signal.profit_abs;
-  if (profitPctVal) {
-    if (profitPct !== null && profitPct !== undefined) {
-      const sign = profitPct >= 0 ? '+' : '';
-      profitPctVal.innerText = `${sign}${profitPct}%`;
-    } else { profitPctVal.innerText = '—'; }
-  }
-  if (profitAbsVal) {
-    if (profitAbs !== null && profitAbs !== undefined) {
-      const sign = profitAbs >= 0 ? '+' : '';
-      profitAbsVal.innerText = `${sign}₹${Math.abs(profitAbs).toLocaleString('en-IN', { maximumFractionDigits: 2 })} / share`;
-    } else { profitAbsVal.innerText = ''; }
-  }
 
   // ── Risk ─────────────────────────────────────────────────────────────
   const riskPctEl = document.getElementById('riskPctVal');
   const riskAbsEl = document.getElementById('riskAbsVal');
   const riskPct = signal.risk_pct;
   const riskAbs = signal.risk_abs;
-  if (riskPctEl) {
-    riskPctEl.innerText = (riskPct !== null && riskPct !== undefined) ? `-${riskPct}%` : '—';
-  }
-  if (riskAbsEl) {
-    if (riskAbs !== null && riskAbs !== undefined) {
-      riskAbsEl.innerText = `-₹${Number(riskAbs).toLocaleString('en-IN', { maximumFractionDigits: 2 })} / share`;
-    } else { riskAbsEl.innerText = ''; }
-  }
 
   // ── Risk : Reward ────────────────────────────────────────────────────
   const rrRatioEl = document.getElementById('rrRatioVal');
   const rrQualityEl = document.getElementById('rrQualityVal');
   const rr = signal.risk_reward_computed || signal.risk_reward;
-  if (rrRatioEl) {
-    if (rr !== null && rr !== undefined) {
-      rrRatioEl.innerText = `1 : ${Number(rr).toFixed(2)}`;
-    } else { rrRatioEl.innerText = '—'; }
+
+  if (isHold) {
+    if (profitPctVal) {
+      profitPctVal.innerText = '—';
+      profitPctVal.style.color = 'var(--text-muted)';
+    }
+    if (profitAbsVal) {
+      profitAbsVal.innerText = 'No active position';
+    }
+    if (riskPctEl) {
+      riskPctEl.innerText = '—';
+      riskPctEl.style.color = 'var(--text-muted)';
+    }
+    if (riskAbsEl) {
+      riskAbsEl.innerText = 'Zero exposure';
+    }
+    if (rrRatioEl) {
+      rrRatioEl.innerText = '—';
+    }
+    if (rrQualityEl) {
+      rrQualityEl.innerText = 'Sidelines';
+    }
+  } else {
+    if (profitPctVal) {
+      profitPctVal.style.color = '';
+      if (profitPct !== null && profitPct !== undefined && !isNaN(Number(profitPct))) {
+        const sign = Number(profitPct) >= 0 ? '+' : '';
+        profitPctVal.innerText = `${sign}${profitPct}%`;
+      } else { profitPctVal.innerText = '—'; }
+    }
+    if (profitAbsVal) {
+      if (profitAbs !== null && profitAbs !== undefined && !isNaN(Number(profitAbs))) {
+        const sign = Number(profitAbs) >= 0 ? '+' : '';
+        profitAbsVal.innerText = `${sign}₹${Math.abs(profitAbs).toLocaleString('en-IN', { maximumFractionDigits: 2 })} / share`;
+      } else { profitAbsVal.innerText = ''; }
+    }
+
+    if (riskPctEl) {
+      riskPctEl.style.color = '';
+      riskPctEl.innerText = (riskPct !== null && riskPct !== undefined && !isNaN(Number(riskPct))) ? `-${riskPct}%` : '—';
+    }
+    if (riskAbsEl) {
+      if (riskAbs !== null && riskAbs !== undefined && !isNaN(Number(riskAbs))) {
+        riskAbsEl.innerText = `-₹${Number(riskAbs).toLocaleString('en-IN', { maximumFractionDigits: 2 })} / share`;
+      } else { riskAbsEl.innerText = ''; }
+    }
+
+    if (rrRatioEl) {
+      if (rr !== null && rr !== undefined && !isNaN(Number(rr))) {
+        rrRatioEl.innerText = `1 : ${Number(rr).toFixed(2)}`;
+      } else { rrRatioEl.innerText = '—'; }
+    }
+    if (rrQualityEl) {
+      if (rr !== null && rr !== undefined && !isNaN(Number(rr))) {
+        const rrNum = Number(rr);
+        rrQualityEl.innerText = rrNum >= 2 ? '✅ Excellent' : rrNum >= 1.5 ? '👍 Good' : rrNum >= 1 ? '⚠ Marginal' : '❌ Poor';
+      } else { rrQualityEl.innerText = ''; }
+    }
   }
-  if (rrQualityEl) {
-    if (rr !== null && rr !== undefined) {
-      const rrNum = Number(rr);
-      rrQualityEl.innerText = rrNum >= 2 ? '✅ Excellent' : rrNum >= 1.5 ? '👍 Good' : rrNum >= 1 ? '⚠ Marginal' : '❌ Poor';
-    } else { rrQualityEl.innerText = ''; }
+
+  // ── Institutional F&O Levels & ΔOI ──────────────────────────────────
+  const inst = signal.institutional_levels || {};
+  const foCard = document.getElementById('foLevelsCard');
+  const deltaBadge = document.getElementById('foDeltaBadge');
+  const putWallVal = document.getElementById('foPutWallVal');
+  const callWallVal = document.getElementById('foCallWallVal');
+  const maxPainVal = document.getElementById('foMaxPainVal');
+  const defenseStrikeVal = document.getElementById('foDefenseStrikeVal');
+
+  const hasFoData = inst.call_wall || inst.put_wall || inst.max_pain || inst.delta_oi || agents?.sentiment?.call_wall;
+  if (foCard && hasFoData) {
+    foCard.classList.remove('hidden');
+    const pWall = inst.put_wall || agents?.sentiment?.put_wall || inst.confluence_support;
+    const cWall = inst.call_wall || agents?.sentiment?.call_wall || inst.confluence_resistance;
+    const mPain = inst.max_pain || agents?.sentiment?.max_pain;
+    const doi = inst.delta_oi || agents?.sentiment?.delta_oi;
+
+    if (putWallVal) putWallVal.innerText = formatPrice(pWall);
+    if (callWallVal) callWallVal.innerText = formatPrice(cWall);
+    if (maxPainVal) maxPainVal.innerText = formatPrice(mPain);
+
+    const topDefense = doi?.fastestPutWriting?.strike || doi?.fastestCallWriting?.strike || doi?.topBuildups?.[0]?.strike;
+    if (defenseStrikeVal) defenseStrikeVal.innerText = topDefense ? formatPrice(topDefense) : '—';
+
+    if (deltaBadge) {
+      const doiSig = doi?.signal || 'NEUTRAL';
+      deltaBadge.innerText = doiSig.replace(/_/g, ' ');
+      deltaBadge.className = `fo-delta-badge ${doiSig.toLowerCase()}`;
+    }
+  } else if (foCard) {
+    foCard.classList.add('hidden');
   }
 
   resultCard.classList.remove('hidden');

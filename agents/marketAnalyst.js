@@ -1,95 +1,120 @@
 import { runLLMCompletion, parseLLMJson } from '../tools/alerts.js';
-import { getLatestCandles, getHistoricalCandleStats } from '../tools/snowflake.js';
 import { calculateIndicators } from '../tools/indicators.js';
-import { getKiteHistoricalCandles } from '../tools/kite.js';
-import { getYahooHistoricalCandles } from '../tools/yahoo.js';
+import { getSynchronizedCandles } from '../tools/candleSync.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 // ─── Helper: summarize indicators for a timeframe ────────
 const summarizeIndicators = (ind, tf) => {
-  if (!ind) return `${tf}: No data`;
-  return [
+  if (!ind) return `${tf.toUpperCase()}: No data available`;
+
+  const lines = [
     `[${tf.toUpperCase()}]`,
-    `  Price: ${ind.current_price} | Trend: ${ind.trend}`,
-    `  EMA9: ${ind.ema.ema9} | EMA21: ${ind.ema.ema21} | EMA50: ${ind.ema.ema50}`,
-    `  RSI: ${ind.rsi.value} (${ind.rsi.signal})`,
-    `  MACD: ${ind.macd?.macd} | Hist: ${ind.macd?.histogram} | ${ind.macd?.trend}`,
-    `  BB: ${ind.bollinger?.signal} | VWAP: ${ind.vwap?.signal}`,
-    `  Support: ${ind.support_resistance?.support} | Resistance: ${ind.support_resistance?.resistance}`,
-    `  Volume: ${ind.volume?.trend} (${ind.volume?.ratio}x avg)`,
-  ].join('\n');
+    `  Price: ₹${ind.current_price} | Trend: ${ind.trend}`,
+    `  ATR (Volatility): ₹${ind.atr?.value ?? 'N/A'} (${ind.atr?.pct ?? 'N/A'}% | ${ind.atr?.volatility_category ?? 'NORMAL'}) | SL Buffer: ±₹${ind.atr?.stop_distance ?? 'N/A'}`,
+    `  EMA9: ${ind.ema?.ema9 ?? 'N/A'} | EMA21: ${ind.ema?.ema21 ?? 'N/A'} | EMA50: ${ind.ema?.ema50 ?? 'N/A'} | EMA200: ${ind.ema?.ema200 ?? 'N/A'}`,
+    `  RSI: ${ind.rsi?.value ?? 'N/A'} (${ind.rsi?.signal ?? 'N/A'})`,
+    `  MACD: ${ind.macd?.macd ?? 'N/A'} | Hist: ${ind.macd?.histogram ?? 'N/A'} | ${ind.macd?.trend ?? 'N/A'}`,
+    `  BB: ${ind.bollinger?.signal ?? 'N/A'} | VWAP: ${ind.vwap?.signal ?? 'N/A'} (₹${ind.vwap?.value ?? 'N/A'})`,
+    `  Support: ${ind.support_resistance?.support ?? 'N/A'} | Resistance: ${ind.support_resistance?.resistance ?? 'N/A'}`,
+    `  Volume: ${ind.volume?.trend ?? 'N/A'} (${ind.volume?.ratio ?? 1}x avg)`,
+  ];
+
+  // Phase 3: Session-Anchored VWAP Bands
+  if (ind.vwap_bands) {
+    const vb = ind.vwap_bands;
+    lines.push(`  📊 SESSION VWAP BANDS: VWAP=₹${vb.vwap} | +1σ=₹${vb.upper_1} | -1σ=₹${vb.lower_1} | +2σ=₹${vb.upper_2} | -2σ=₹${vb.lower_2} | Bias: ${vb.bias} (${vb.session_candles_used} session candles)`);
+  }
+
+  // Phase 3: CPR + Camarilla + PDH/PDL
+  if (ind.pivot_levels) {
+    const pl = ind.pivot_levels;
+    lines.push(`  🏛️ CPR: Pivot=₹${pl.pivot} | TC=₹${pl.TC} | BC=₹${pl.BC} | Width: ${pl.cpr_width_pct}% → ${pl.cpr_type} | Position: ${pl.cpr_position}`);
+    lines.push(`  🎯 CAMARILLA: H4=₹${pl.H4} (Breakout) | H3=₹${pl.H3} (Resistance) | L3=₹${pl.L3} (Support) | L4=₹${pl.L4} (Breakdown)`);
+    lines.push(`  📍 PDH=₹${pl.PDH} (${pl.pdh_sweep}) | PDL=₹${pl.PDL} (${pl.pdl_sweep})`);
+  }
+
+  // Phase 3: MFI (Smart Money)
+  if (ind.mfi) {
+    lines.push(`  💰 MFI (Smart Money): ${ind.mfi.value} → ${ind.mfi.signal}`);
+  }
+
+  // Phase 3: Divergences
+  if (ind.divergences && ind.divergences.divergences?.length > 0) {
+    lines.push(`  ⚡ DIVERGENCES: ${ind.divergences.summary} | Bias: ${ind.divergences.bias}`);
+    for (const d of ind.divergences.divergences.slice(0, 3)) {
+      lines.push(`    → ${d.type} (${d.strength}): ${d.description}`);
+    }
+  }
+
+  // Phase 3: Institutional Levels Summary
+  if (ind.institutional_levels) {
+    const il = ind.institutional_levels;
+    lines.push(`  🏦 INSTITUTIONAL S/R: Support=₹${il.primary_support} | Resistance=₹${il.primary_resistance} | Breakout=₹${il.breakout_long} | Breakdown=₹${il.breakdown_short}`);
+  }
+
+  // Phase 4: Market Regime Engine
+  if (ind.market_regime) {
+    const mr = ind.market_regime;
+    lines.push(`  🧭 REGIME: ${mr.primary_regime} (${mr.trend_direction}) | ADX(14): ${mr.adx?.value} (Slope: ${mr.adx?.slope}, +DI: ${mr.adx?.plus_di}, -DI: ${mr.adx?.minus_di})`);
+    lines.push(`  🎯 DUAL CONFIRMATION: ${mr.cpr_dual_confirmation} | Sizing: ${mr.atr_volatility_cross}`);
+    if (mr.time_of_day) {
+      lines.push(`  ⏰ TIME WINDOW (IST): ${mr.time_of_day.label} → ${mr.time_of_day.action}`);
+    }
+    lines.push(`  💡 REGIME GUIDANCE: ${mr.guidance}`);
+  }
+
+  return lines.join('\n');
 };
 
 // ─── Market Analyst Agent ────────────────────────────────
-// Multi-timeframe: Deep historical 1M+ candle & multi-timeframe confluence
 export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays = 30, screenLivePrice = null, abortSignal = null) => {
   try {
     if (abortSignal?.aborted) throw new Error('Analysis aborted by user.');
-    console.log(`📊 Market Analyst analyzing ${symbol} (${lookbackDays}d lookback range)...`);
+    console.log(`📊 Market Analyst analyzing ${symbol} on [${timeframe}] (${lookbackDays}d lookback range)...`);
 
-    // Tier 1: Try Zerodha Kite Connect API
-    let candles1h = [];
-    let kiteRes = await getKiteHistoricalCandles(symbol, timeframe, lookbackDays).catch(() => null);
-    if (kiteRes && kiteRes.candles && kiteRes.candles.length >= 5) {
-      candles1h = kiteRes.candles;
-      console.log(`✅ Using Zerodha Kite Connect real-time candles for ${symbol} (${candles1h.length} candles loaded)`);
+    // Fetch synchronized candles across primary and context timeframes from the SAME active provider
+    const syncResult = await getSynchronizedCandles(symbol, timeframe, lookbackDays, screenLivePrice);
+
+    if (syncResult.error || !syncResult.primaryCandles || syncResult.primaryCandles.length < 5) {
+      return {
+        error: syncResult.error || `Not enough candle data for ${symbol}`,
+        symbol,
+        timeframe,
+      };
     }
 
-    // Tier 2: Try 100% Free Yahoo Finance API if Zerodha token missing/expired
-    if (!candles1h || candles1h.length < 5) {
-      let yahooRes = await getYahooHistoricalCandles(symbol, timeframe, lookbackDays).catch(() => null);
-      if (yahooRes && yahooRes.candles && yahooRes.candles.length >= 5) {
-        candles1h = yahooRes.candles;
-        console.log(`⭐ Using 100% FREE Yahoo Finance real-time candles for ${symbol} (${candles1h.length} candles loaded, Price: ₹${yahooRes.currentPrice})`);
+    const {
+      provider,
+      primaryTimeframe,
+      primaryCandles,
+      contextTimeframes,
+      contextCandles,
+      currentLivePrice,
+      historicalStats,
+    } = syncResult;
+
+    // Step 2: Calculate indicators for primary timeframe
+    const primaryInd = calculateIndicators(primaryCandles);
+    if (!primaryInd) {
+      return { error: `Could not calculate indicators for ${symbol} on ${primaryTimeframe}`, symbol, timeframe: primaryTimeframe };
+    }
+
+    // Calculate indicators for all context timeframes (from the SAME provider)
+    const contextIndMap = {};
+    for (const cTf of contextTimeframes) {
+      const cCandles = contextCandles[cTf] || [];
+      if (cCandles.length >= 5) {
+        contextIndMap[cTf] = calculateIndicators(cCandles);
+      } else {
+        contextIndMap[cTf] = null;
       }
     }
 
-    // Step 1: Fetch 4 timeframes with DEEP candle depth & DB aggregate stats in PARALLEL
-    const [sf1h, candles15m, candles5m, candles1m, historicalStats] = await Promise.all([
-      candles1h.length > 0 ? Promise.resolve(candles1h) : getLatestCandles(symbol, '1_hour', 200).catch(() => []),
-      getLatestCandles(symbol, '15_minute', 150).catch(() => []),
-      getLatestCandles(symbol, '5_minute', 150).catch(() => []),
-      getLatestCandles(symbol, '1_minute', 100).catch(() => []),
-      getHistoricalCandleStats(symbol).catch(() => null),
-    ]);
-
-    candles1h = sf1h;
-
-    // Primary timeframe must have data
-    if (!candles1h || candles1h.length < 5) {
-      return { error: `Not enough candle data for ${symbol}`, symbol, timeframe };
-    }
-
-    // Extract exact live real-time price (prioritize user screen live price if available)
-    const currentLivePrice = screenLivePrice ? Number(screenLivePrice) : Number(candles1h[candles1h.length - 1].CLOSE);
-
-    // Calibrate lower timeframe candles (if from DB) so latest candle CLOSE matches current live price
-    const calibrateCandles = (arr) => {
-      if (!arr || arr.length === 0) return arr;
-      const copy = [...arr];
-      const lastIdx = copy.length - 1;
-      copy[lastIdx] = { ...copy[lastIdx], CLOSE: currentLivePrice };
-      return copy;
-    };
-
-    const c15m = calibrateCandles(candles15m);
-    const c5m = calibrateCandles(candles5m);
-    const c1m = calibrateCandles(candles1m);
-
-    // Step 2: Calculate indicators for each timeframe
-    const ind1h = calculateIndicators(candles1h);
-    const ind15m = c15m.length >= 10 ? calculateIndicators(c15m) : null;
-    const ind5m = c5m.length >= 10 ? calculateIndicators(c5m) : null;
-    const ind1m = c1m.length >= 10 ? calculateIndicators(c1m) : null;
-
-    if (!ind1h) return { error: 'Could not calculate 1hr indicators', symbol, timeframe };
-
     // Step 3: Count how many timeframes agree on direction
-    const trendVotes = [ind1h, ind15m, ind5m, ind1m]
-      .filter(Boolean)
-      .map(i => i.trend);
+    const allIndicators = [primaryInd, ...Object.values(contextIndMap)].filter(Boolean);
+    const trendVotes = allIndicators.map(i => i.trend);
     const bullCount = trendVotes.filter(t => t === 'UPTREND').length;
     const bearCount = trendVotes.filter(t => t === 'DOWNTREND').length;
     const mtfAlignment = bullCount === trendVotes.length ? 'ALL_BULLISH'
@@ -98,12 +123,12 @@ export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays =
           : bearCount > bullCount ? 'MOSTLY_BEARISH'
             : 'MIXED';
 
-    // Step 4: Sample full candle trajectory across dataset + last 5 for context
-    const sampleSize = Math.min(25, candles1h.length);
-    const step = Math.max(1, Math.floor(candles1h.length / sampleSize));
+    // Step 4: Sample primary candle trajectory across full dataset
+    const sampleSize = Math.min(25, primaryCandles.length);
+    const step = Math.max(1, Math.floor(primaryCandles.length / sampleSize));
     const sampledPrimaryTrajectory = [];
-    for (let i = 0; i < candles1h.length; i += step) {
-      const c = candles1h[i];
+    for (let i = 0; i < primaryCandles.length; i += step) {
+      const c = primaryCandles[i];
       sampledPrimaryTrajectory.push({
         idx: i,
         time: c.BUCKET,
@@ -115,53 +140,61 @@ export const marketAnalyst = async (symbol, timeframe = '1_hour', lookbackDays =
       });
     }
 
-    const last5_1h = candles1h.slice(-5).map(c => ({
-      time: c.BUCKET, open: +c.OPEN, high: +c.HIGH, low: +c.LOW,
-      close: +c.CLOSE, volume: +c.VOLUME,
-    }));
-    const last5_5m = candles5m.slice(-5).map(c => ({
+    const last5Primary = primaryCandles.slice(-5).map(c => ({
       time: c.BUCKET, open: +c.OPEN, high: +c.HIGH, low: +c.LOW,
       close: +c.CLOSE, volume: +c.VOLUME,
     }));
 
-    // Step 5: Build multi-timeframe prompt
+    // Find the lowest available context timeframe for entry timing
+    const lowestContextTf = contextTimeframes.find(tf => tf.includes('1_m') || tf.includes('5_m')) || contextTimeframes[0];
+    const lowestContextCandles = (contextCandles[lowestContextTf] || []).slice(-5).map(c => ({
+      time: c.BUCKET, open: +c.OPEN, high: +c.HIGH, low: +c.LOW,
+      close: +c.CLOSE, volume: +c.VOLUME,
+    }));
+
+    // Step 5: Build multi-timeframe indicator section for prompt
+    const contextIndicatorSummaries = contextTimeframes
+      .map(tf => summarizeIndicators(contextIndMap[tf], tf))
+      .join('\n\n');
+
+    // Step 6: Build prompt
     const prompt = `
 You are an expert technical analyst specializing in Indian markets (NSE/BSE).
-Analyze ${symbol} using MULTI-TIMEFRAME confluence analysis across ALL ${candles1h.length} loaded candles for ${timeframe}.
+Analyze ${symbol} using MULTI-TIMEFRAME confluence analysis across ALL ${primaryCandles.length} loaded candles for ${primaryTimeframe}.
+Data Source: ${provider.toUpperCase()} (100% Synchronized multi-timeframe feed).
 
-PRIMARY TIMEFRAME CANDLE DATASET STATS:
-- Total Primary Candles Analyzed: ${candles1h.length} candles across full lookback range
-- Total Candle Rows Scanned in Snowflake: ${historicalStats?.total_rows_scanned?.toLocaleString() || '10,000,000+'} (1min: ${historicalStats?.total_1min_candles?.toLocaleString()}, 5min: ${historicalStats?.total_5min_candles?.toLocaleString()}, 15min: ${historicalStats?.total_15min_candles?.toLocaleString()}, 1hr: ${historicalStats?.total_1hr_candles?.toLocaleString()})
+CURRENT REAL-TIME PRICE: ₹ ${currentLivePrice}
+
+PRIMARY TIMEFRAME CANDLE DATASET STATS (${primaryTimeframe.toUpperCase()}):
+- Total Primary Candles Analyzed: ${primaryCandles.length} candles across lookback range
 - All-Time Support Low: ${historicalStats?.historical_support_low || 'N/A'}
 - All-Time Resistance High: ${historicalStats?.historical_resistance_high || 'N/A'}
 - Historical Avg Volume: ${historicalStats?.avg_volume ? Math.round(historicalStats.avg_volume).toLocaleString() : 'N/A'}
 - Price Volatility (StdDev): ${historicalStats?.price_volatility ? historicalStats.price_volatility.toFixed(2) : 'N/A'}
 
-SAMPLED TRAJECTORY ACROSS ALL ${candles1h.length} PRIMARY CANDLES (from start to end):
+SAMPLED TRAJECTORY ACROSS ALL ${primaryCandles.length} PRIMARY CANDLES (from start to end):
 ${JSON.stringify(sampledPrimaryTrajectory, null, 2)}
 
-MULTI-TIMEFRAME INDICATOR SUMMARY (Calculated across ALL candles):
-${summarizeIndicators(ind1h, 'primary_' + timeframe)}
+PRIMARY TIMEFRAME INDICATOR SUMMARY:
+${summarizeIndicators(primaryInd, 'PRIMARY_' + primaryTimeframe)}
 
-${summarizeIndicators(ind15m, '15_min')}
+CONTEXT TIMEFRAME INDICATOR SUMMARIES (Synchronized on same feed):
+${contextIndicatorSummaries}
 
-${summarizeIndicators(ind5m, '5_min')}
-
-${summarizeIndicators(ind1m, '1_min')}
-
-TIMEFRAME ALIGNMENT: ${mtfAlignment} (${bullCount} bullish, ${bearCount} bearish out of ${trendVotes.length} TFs)
+TIMEFRAME CONFLUENCE ALIGNMENT: ${mtfAlignment} (${bullCount} bullish, ${bearCount} bearish out of ${trendVotes.length} TFs)
 
 RECENT PRIMARY CANDLES (last 5):
-${JSON.stringify(last5_1h)}
+${JSON.stringify(last5Primary)}
 
-RECENT 5M CANDLES (last 5 — for entry timing):
-${JSON.stringify(last5_5m)}
+RECENT ENTRY-TIMING CANDLES (${lowestContextTf ? lowestContextTf.toUpperCase() : 'MICRO'} - last 5):
+${JSON.stringify(lowestContextCandles)}
 
 Multi-timeframe trading rules:
-- Higher timeframe (1hr) sets the DIRECTION
-- Lower timeframes (5min, 1min) confirm MOMENTUM and ENTRY timing
-- ALL timeframes agreeing = STRONG signal
-- Mixed timeframes = wait or reduce size
+- The primary timeframe (${primaryTimeframe}) sets the CORE BIAS for this trade.
+- Higher timeframes confirm the MACRO trend and major institutional levels.
+- Lower timeframes (${lowestContextTf || 'lower'}) indicate MOMENTUM and ENTRY timing.
+- ALL timeframes agreeing (${mtfAlignment}) = HIGH CONVICTION signal.
+- Mixed timeframes = wait or recommend conservative entry.
 
 Provide analysis in this EXACT JSON format:
 {
@@ -196,26 +229,29 @@ Respond ONLY with valid JSON. No explanation outside JSON.
 
     const analysis = parseLLMJson(rawText);
 
-    console.log(`✅ Market Analyst done [${mtfAlignment}]:`, analysis.bias, analysis.confidence + '%');
+    console.log(`✅ Market Analyst done [${mtfAlignment} via ${provider}]:`, analysis.bias, analysis.confidence + '%');
+
+    const indicatorsOutput = {
+      [primaryTimeframe]: primaryInd,
+      ...contextIndMap,
+    };
 
     return {
       symbol,
-      timeframe,
+      timeframe: primaryTimeframe,
+      provider,
       currentPrice: currentLivePrice,
-      candles: candles1h,
+      candles: primaryCandles,
+      context_candles: contextCandles,
       mtf_alignment: mtfAlignment,
       bull_tf_count: bullCount,
       bear_tf_count: bearCount,
-      indicators: {
-        '1_hour': ind1h,
-        '15_minute': ind15m,
-        '5_minute': ind5m,
-        '1_minute': ind1m,
-      },
+      indicators: indicatorsOutput,
+      market_regime: primaryInd?.market_regime || null,
       analysis,
-      candle_count: candles1h.length,
+      candle_count: primaryCandles.length,
       historical_stats: historicalStats,
-      last_candle: last5_1h[last5_1h.length - 1],
+      last_candle: last5Primary[last5Primary.length - 1],
     };
 
   } catch (error) {
